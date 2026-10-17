@@ -1,0 +1,104 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+/* Label on the left, field with its hint and error on the right. */
+.codeserver-settings {
+	display: grid;
+	grid-template-columns: minmax(140px, 220px) minmax(0, 1fr);
+	gap: 14px 16px;
+	align-items: start;
+	max-inline-size: 960px;
+}
+
+.codeserver-settings > label,
+.codeserver-settings > span {
+	padding-block-start: 8px;
+}
+
+.codeserver-settings input[type=url],
+.codeserver-settings input[type=text],
+.codeserver-settings textarea {
+	inline-size: 100%;
+	margin: 0;
+}
+
+.codeserver-settings textarea {
+	font-family: var(--font-face-monospace, monospace);
+	min-block-size: 4em;
+}
+
+.codeserver-settings input[type=number] {
+	inline-size: 8em;
+	margin: 0;
+}
+
+.codeserver-settings__row {
+	display: flex;
+	gap: 8px;
+}
+
+.codeserver-settings__hint {
+	margin: 4px 0 0;
+	color: var(--color-text-maxcontrast);
+}
+
+.codeserver-settings__error {
+	margin: 4px 0 0;
+	color: var(--color-error-text, var(--color-error));
+}
+
+.codeserver-settings__error:empty {
+	display: none;
+}
+
+.codeserver-settings__notice {
+	margin-block-end: 12px;
+	padding: 8px 12px;
+	border-inline-start: 4px solid var(--color-warning, #c28900);
+	background: var(--color-background-hover);
+}
+
+.codeserver-settings__check {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding-block: 4px;
+}
+
+.codeserver-settings__check input {
+	inline-size: 16px;
+	block-size: 16px;
+	margin: 3px 0 0;
+	accent-color: var(--color-primary-element);
+}
+
+.codeserver-settings__entries {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+	gap: 0 16px;
+	border: none;
+	margin: 0;
+	padding: 0;
+}
+
+.codeserver-settings__ext {
+	color: var(--color-text-maxcontrast);
+}
+
+.codeserver-settings__restore {
+	margin-block-start: 6px;
+}
+
+.codeserver-settings__actions {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+@media (max-width: 720px) {
+	.codeserver-settings {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}

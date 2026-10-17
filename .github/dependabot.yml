@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Weekly update pull requests, minor and patch updates grouped into one per ecosystem and
+# directory; major updates come one by one because they tend to need changes. A release has to
+# be a week old before it is proposed: compromised package releases are mostly caught and pulled
+# within days. Security updates are not delayed.
+
+version: 2
+
+updates:
+  # The tests and tooling, and the Nextcloud app's front end (its libraries are
+  # bundled into codeserver_layer/js/ by codeserver_layer/build.mjs).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Files keeps its actions in a registry per @nextcloud/files major (window._nc_files_scope.v4_0).
+      # The bundled major must be the one the supported servers ship (4.x for Nextcloud 34 and 35), so
+      # it moves by hand, together with info.xml's range and the nextcloud-e2e matrix.
+      - dependency-name: '@nextcloud/files'
+        update-types: ['version-update:semver-major']
+      # typescript-eslint supports only a range of TypeScript versions (its peer dependency), so a
+      # new TypeScript minor moves by hand together with typescript-eslint; patches still come.
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major', 'version-update:semver-minor']
+      # @types/node describes the Node.js the tooling runs on: 24, as in package.json's engines and
+      # the workflows' node-version. A newer major would let TypeScript accept APIs Node.js 24 lacks,
+      # so it moves by hand, together with those.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+
+  - package-ecosystem: composer
+    directory: /codeserver_layer
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # Updates the SHA pins in .github/workflows/ together with their version comments.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]

@@ -1,0 +1,360 @@
+# SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Daily run against the newest releases of what the app depends on but does not control, so that
+# an update elsewhere that breaks the app shows up before a server takes it:
+#  - codeserver-latest: the newest code-server release, which comes out about weekly. The address
+#    format the app builds (?folder=…&payload=…) belongs to VS Code's web workbench and can change
+#    with any release; specs/codeserver.spec.ts opens the app's addresses in it.
+#  - nextcloud-latest: the newest patch release of each Nextcloud major in info.xml's range (the
+#    official nextcloud:<major>-apache images), with the newest release of the Craft Suite Layer
+#    next to the app, as both write Nextcloud's MIME type files: all specs/nextcloud-*.spec.ts, as
+#    the nextcloud-e2e job in ci.yml runs them against the tested releases.
+# Both compare what they ran with the tested versions in tests/e2e/versions.json, and a test that
+# passes only on its retry counts as failed. When either fails, its summary says which new releases
+# to hold back, and one issue labelled 'canary' opens (or the open one gets a comment); the next
+# passing run comments and closes it. When a newer release passes, the summary says what to raise
+# in tests/e2e/versions.json; CI then tests that on every change.
+#
+#  - nextcloud-next: Nextcloud's development branch. The Files entries use the action registry of
+#    @nextcloud/files 4.x; when the branch asks for another major, an issue labelled
+#    'canary-nextcloud' says so before that release ships. It also warns once the branch's version
+#    is above info.xml's max-version, and when Nextcloud Text's list of types it opens differs from
+#    the copy in codeserver_layer/lib/Service/Config.php (TEXT_TYPES). This job cannot fail the run.
+#
+# Actions are pinned to full commit SHAs, as in ci.yml.
+
+name: Canary
+
+on:
+  schedule:
+    # 05:17 UTC; the odd minute avoids the top of the hour, when GitHub delays or drops the most
+    # scheduled runs. GitHub turns schedules off after 60 days without activity in a public
+    # repository; the Actions tab turns them back on.
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time, so two runs cannot both find no open issue and open one each.
+concurrency:
+  group: canary
+  cancel-in-progress: false
+
+jobs:
+  codeserver-latest:
+    name: newest code-server release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      summary: ${{ steps.summary.outputs.summary }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # The newest version from the redirect of releases/latest; its digest from the API, with this
+      # run's token (not the unauthenticated limit). No cache: a new release is a new download.
+      # Step timeouts below the job's keep a hang a failure (which reports) rather than a
+      # cancellation (which does not).
+      - name: Fetch the newest code-server
+        id: fetch
+        timeout-minutes: 5
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          dir=$(node tests/e2e/tools/fetch-codeserver.mjs --latest)
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./.codeserver/selected.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Start code-server
+        timeout-minutes: 3
+        env:
+          DIR: ${{ steps.fetch.outputs.dir }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/workspace"
+          sh tests/e2e/tools/start-codeserver.sh "$DIR" "$RUNNER_TEMP/code-server" 8090
+
+      # With CI set, the config retries a failed test once; --fail-on-flaky-tests keeps a test that
+      # passes only on its retry from counting as passed. The JSON report feeds the summary.
+      - name: End-to-end tests in code-server
+        id: test
+        timeout-minutes: 8
+        env:
+          CODESERVER_URL: http://127.0.0.1:8090/
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ runner.temp }}/codeserver.json
+        run: |
+          CODESERVER_WORKSPACE="$RUNNER_TEMP/workspace" CODESERVER_HOST_DIR="$RUNNER_TEMP/workspace" \
+            npm run test:e2e -- --project=codeserver-chromium --fail-on-flaky-tests --add-reporter json
+
+      - name: Write the summary
+        id: summary
+        if: always()
+        env:
+          VERSION: ${{ steps.fetch.outputs.version }}
+          FETCH: ${{ steps.fetch.outcome }}
+          TEST: ${{ steps.test.outcome }}
+          REPORT: ${{ runner.temp }}/codeserver.json
+        run: node tests/e2e/tools/canary-report.mjs codeserver
+
+      - name: code-server log
+        if: failure()
+        run: cat "$RUNNER_TEMP/code-server/code-server.log" || true
+
+      - name: Upload Playwright report and test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-codeserver
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  nextcloud-latest:
+    name: newest Nextcloud releases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      summary: ${{ steps.summary.outputs.summary }}
+    env:
+      # A throwaway instance on the runner; the passwords protect nothing.
+      NEXTCLOUD_URL: http://localhost:8080
+      NEXTCLOUD_CONTAINER: nextcloud
+      NEXTCLOUD_PASSWORD: e2e-admin-password
+      E2E_PASSWORD_SUFFIX: -password-4b7e9d
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # The archive's staged folder: only the files the App Store package ships.
+      - name: Build the App Store package
+        run: make -C codeserver_layer appstore
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # The newest release from the redirect of releases/latest, checked against its SHA256SUMS.
+      - name: Fetch the newest Craft Suite Layer
+        id: craft
+        timeout-minutes: 5
+        run: |
+          archive=$(node tests/e2e/tools/fetch-craftsuite-layer.mjs --latest "$RUNNER_TEMP/craft")
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p 'require(process.argv[1]).version' "$RUNNER_TEMP/craft/selected.json")" >> "$GITHUB_OUTPUT"
+
+      # One major after the other, each in the official image of its newest patch release, so that
+      # the next major still runs when one fails or hangs. Each gets its own reports and test
+      # results; the Nextcloud logs go to nextcloud-logs/.
+      - name: End-to-end tests in the newest Nextcloud releases
+        id: test
+        timeout-minutes: 45
+        env:
+          CRAFT: ${{ steps.craft.outputs.archive }}
+        run: |
+          # shellcheck disable=SC2016 # ${m} below is a JavaScript template literal
+          majors=$(node -e '
+            const xml = require("node:fs").readFileSync("codeserver_layer/appinfo/info.xml", "utf8");
+            const [min, max] = ["min", "max"].map((m) => Number(new RegExp(`<nextcloud\\b[^>]*\\b${m}-version="(\\d+)`).exec(xml)?.[1]));
+            if (!(min <= max)) throw new Error("no Nextcloud range in info.xml");
+            console.log(Array.from({ length: max - min + 1 }, (_, i) => min + i).join(" "));')
+          mkdir -p nextcloud-logs
+          : > "$RUNNER_TEMP/nextcloud-results.txt"
+          status=0
+          for major in $majors; do
+            echo "::group::Nextcloud $major"
+            docker rm -f nextcloud >/dev/null 2>&1 || true
+            result=failure
+            if docker run -d --name nextcloud -p 8080:80 \
+                -e SQLITE_DATABASE=nextcloud \
+                -e NEXTCLOUD_ADMIN_USER=admin -e NEXTCLOUD_ADMIN_PASSWORD="$NEXTCLOUD_PASSWORD" \
+                -e NEXTCLOUD_TRUSTED_DOMAINS=localhost \
+                -v "$PWD/codeserver_layer/build/stage/codeserver_layer:/var/www/html/custom_apps/codeserver_layer" \
+                "nextcloud:$major-apache" &&
+              timeout 600 sh tests/e2e/tools/setup-nextcloud.sh nextcloud "$NEXTCLOUD_URL" "$CRAFT" &&
+              PLAYWRIGHT_JSON_OUTPUT_FILE="$RUNNER_TEMP/nextcloud-$major.json" \
+              PLAYWRIGHT_HTML_OUTPUT_DIR="playwright-report/nextcloud-$major" \
+              timeout 1200 node_modules/.bin/playwright test -c tests/e2e/playwright.config.ts \
+                --project=nextcloud-chromium --fail-on-flaky-tests \
+                --output "test-results/nextcloud-$major" --add-reporter json; then
+              result=success
+            else
+              status=1
+            fi
+            version=$(curl -fsS "$NEXTCLOUD_URL/status.php" | node -p 'JSON.parse(require("node:fs").readFileSync(0, "utf8")).versionstring' || echo -)
+            echo "$major ${version:--} $result" >> "$RUNNER_TEMP/nextcloud-results.txt"
+            docker exec nextcloud cat /var/www/html/data/nextcloud.log > "nextcloud-logs/nextcloud-$major.log" 2>/dev/null ||
+              docker logs nextcloud > "nextcloud-logs/nextcloud-$major.log" 2>&1 || true
+            echo "::endgroup::"
+          done
+          cat "$RUNNER_TEMP/nextcloud-results.txt"
+          exit "$status"
+
+      - name: Write the summary
+        id: summary
+        if: always()
+        env:
+          RESULTS: ${{ runner.temp }}/nextcloud-results.txt
+          REPORTS: ${{ runner.temp }}
+          CRAFT_VERSION: ${{ steps.craft.outputs.version }}
+          CRAFT: ${{ steps.craft.outcome }}
+          TEST: ${{ steps.test.outcome }}
+        run: node tests/e2e/tools/canary-report.mjs nextcloud
+
+      - name: Upload Playwright reports, test results and Nextcloud logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-nextcloud
+          path: |
+            playwright-report/
+            test-results/
+            nextcloud-logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  nextcloud-next:
+    name: next Nextcloud release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Its result goes to the report through its outputs; a failed download must not fail the run
+    # and so hide what the tests found.
+    continue-on-error: true
+    outputs:
+      message: ${{ steps.check.outputs.message }}
+      changed: ${{ steps.check.outputs.changed }}
+      checked: ${{ steps.check.outputs.checked }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the server's and Text's development branches
+        id: check
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/package.json" https://raw.githubusercontent.com/nextcloud/server/master/package.json
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/version.php" https://raw.githubusercontent.com/nextcloud/server/master/version.php
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/mime.js" https://raw.githubusercontent.com/nextcloud/text/main/src/helpers/mime.js
+          node - "$RUNNER_TEMP" <<'JS'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const dir = process.argv[2];
+          const pkg = JSON.parse(fs.readFileSync(`${dir}/package.json`, 'utf8'));
+          const version = /\$OC_VersionString\s*=\s*'([^']+)'/.exec(fs.readFileSync(`${dir}/version.php`, 'utf8'))?.[1] ?? 'unknown';
+          const major = Number(/^(\d+)\./.exec(version)?.[1] ?? NaN);
+          const max = Number(/<nextcloud\b[^>]*\bmax-version="(\d+)/.exec(fs.readFileSync('codeserver_layer/appinfo/info.xml', 'utf8'))?.[1] ?? NaN);
+          const range = String(pkg.dependencies?.['@nextcloud/files'] ?? '');
+          const ok = /^[\^~]?4(\.|$)/.test(range);
+          const lines = [];
+          if (ok) lines.push(`Nextcloud ${version} (development branch) still asks for @nextcloud/files ${range}, the major whose registry the Files entries use.`);
+          else if (range) lines.push(`Nextcloud ${version} (development branch) asks for @nextcloud/files '${range}' instead of 4.x. The Files entries (codeserver_layer/src/files.ts) register into the 4.x registry: move them to the new major, test against that server and widen info.xml's range before the release.`);
+          else lines.push(`The package.json of Nextcloud ${version} names no @nextcloud/files dependency: the check in .github/workflows/canary.yml needs updating.`);
+          if (Number.isFinite(major) && Number.isFinite(max) && major > max) {
+            lines.push(`Nextcloud ${major} is above info.xml's max-version ${max}: Nextcloud disables the app there until that range and nextcloud.tested in tests/e2e/versions.json include it.`);
+          }
+          // Text's types against the copy in Config.php: a difference moves a format between a click and the menu.
+          const text = [...fs.readFileSync(`${dir}/mime.js`, 'utf8').matchAll(/'([a-z]+\/[^']+)'/g)].map((m) => m[1]);
+          const php = fs.readFileSync('codeserver_layer/lib/Service/Config.php', 'utf8');
+          const block = php.slice(php.indexOf('TEXT_TYPES = ['), php.indexOf('];', php.indexOf('TEXT_TYPES = [')));
+          const copy = [...block.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+          const added = text.filter((t) => !copy.includes(t));
+          const removed = copy.filter((t) => !text.includes(t));
+          if (text.length === 0) lines.push('Nextcloud Text\'s src/helpers/mime.js lists no types any more: the check in canary.yml needs updating.');
+          else if (added.length || removed.length) lines.push(`Nextcloud Text's types differ from TEXT_TYPES in Config.php: added ${added.join(', ') || '-'}, removed ${removed.join(', ') || '-'}. Update the copy.`);
+          for (const [i, line] of lines.entries()) console.log(i === 0 && !ok ? `::error::${line}` : i > 0 ? `::warning::${line}` : line);
+          const message = lines.join('\n\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, message + '\n');
+          const eof = `EOF_${crypto.randomUUID()}`;
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `message<<${eof}\n${message}\n${eof}\nchanged=${!ok}\nchecked=true\n`);
+          JS
+
+  # Separate job so that only code from this repository runs with write access to issues.
+  report:
+    name: report
+    needs: [codeserver-latest, nextcloud-latest, nextcloud-next]
+    # Only for main (a manual run on another branch must not touch the issues), and not for a
+    # cancelled run.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open, update or close the canary issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CODESERVER: ${{ needs.codeserver-latest.result }}
+          CODESERVER_SUMMARY: ${{ needs.codeserver-latest.outputs.summary }}
+          NEXTCLOUD: ${{ needs.nextcloud-latest.result }}
+          NEXTCLOUD_SUMMARY: ${{ needs.nextcloud-latest.outputs.summary }}
+          NEXT_CHECKED: ${{ needs.nextcloud-next.outputs.checked }}
+          NEXT_CHANGED: ${{ needs.nextcloud-next.outputs.changed }}
+          NEXT_MESSAGE: ${{ needs.nextcloud-next.outputs.message }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="$RUNNER_TEMP/body.md"
+          # Comments on the open issue with label $1, or opens one titled $2 (label description $3,
+          # label colour $4).
+          report() {
+            issue=$(gh issue list --label "$1" --state open --limit 1 --json number --jq '.[0].number // empty')
+            if [ -n "$issue" ]; then gh issue comment "$issue" --body-file "$body"; return; fi
+            if ! gh label list --search "$1" --json name --jq '.[].name' | grep -qx -- "$1"; then
+              gh label create "$1" --color "$4" --description "$3"
+            fi
+            gh issue create --title "$2" --label "$1" --body-file "$body"
+          }
+          # Comments on and closes the open issue with label $1, if there is one.
+          resolve() {
+            issue=$(gh issue list --label "$1" --state open --limit 1 --json number --jq '.[0].number // empty')
+            if [ -n "$issue" ]; then gh issue comment "$issue" --body-file "$body"; gh issue close "$issue" --reason completed; fi
+          }
+          {
+            printf '%s\n\n' "${CODESERVER_SUMMARY:-### code-server: the job ended before its summary ($CODESERVER)}"
+            printf '%s\n\n' "${NEXTCLOUD_SUMMARY:-### Nextcloud: the job ended before its summary ($NEXTCLOUD)}"
+            printf 'Run: %s\n' "$RUN_URL"
+          } > "$body"
+          if [ "$CODESERVER" = failure ] || [ "$NEXTCLOUD" = failure ]; then
+            report canary 'Canary: a newer release of code-server or Nextcloud fails the tests' \
+              'Daily test run against the newest code-server and Nextcloud releases failed' d93f0b
+          elif [ "$CODESERVER" = success ] && [ "$NEXTCLOUD" = success ]; then
+            resolve canary
+          else
+            echo "::warning::The test jobs ended with '$CODESERVER' (code-server) and '$NEXTCLOUD' (Nextcloud); the canary issue is left as it is."
+          fi
+          printf '%s\n\nRun: %s\n' "$NEXT_MESSAGE" "$RUN_URL" > "$body"
+          if [ "$NEXT_CHANGED" = true ]; then
+            report canary-nextcloud 'Canary: the next Nextcloud release changes what the Files entries depend on' \
+              "Daily check: Nextcloud's development branch asks for another @nextcloud/files major" 0082c9
+          elif [ "$NEXT_CHECKED" = true ]; then
+            resolve canary-nextcloud
+          else
+            echo "::warning::The check of the next Nextcloud release gave no result; see its job."
+          fi

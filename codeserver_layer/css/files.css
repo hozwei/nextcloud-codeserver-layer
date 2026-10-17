@@ -1,0 +1,79 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+/* The dialogs and messages of src/dialog.ts, in Nextcloud's colours. */
+.codeserver-dialog {
+	box-sizing: border-box;
+	inline-size: min(520px, calc(100vw - 32px));
+	border: none;
+	border-radius: var(--border-radius-large, 12px);
+	padding: 20px 24px;
+	background: var(--color-main-background);
+	color: var(--color-main-text);
+	box-shadow: 0 0 40px var(--color-box-shadow, rgba(0, 0, 0, .3));
+}
+
+.codeserver-dialog::backdrop {
+	background: rgba(0, 0, 0, .5);
+}
+
+.codeserver-dialog__title {
+	margin: 0 0 12px;
+	font-size: 1.25em;
+	font-weight: bold;
+	overflow-wrap: anywhere;
+}
+
+.codeserver-dialog__text {
+	margin: 0 0 10px;
+}
+
+.codeserver-dialog__label {
+	display: block;
+	margin-block-end: 4px;
+}
+
+.codeserver-dialog__row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.codeserver-dialog__input {
+	flex: 1;
+	min-inline-size: 0;
+	margin: 0;
+}
+
+.codeserver-dialog__ext {
+	color: var(--color-text-maxcontrast);
+}
+
+.codeserver-dialog__error {
+	min-block-size: 1.5em;
+	margin: 4px 0 0;
+	color: var(--color-error-text, var(--color-error));
+}
+
+.codeserver-dialog__actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-block-start: 12px;
+}
+
+.codeserver-toast {
+	position: fixed;
+	inset-block-end: 24px;
+	inset-inline-start: 50%;
+	transform: translateX(-50%);
+	z-index: 10100;
+	max-inline-size: min(560px, calc(100vw - 32px));
+	padding: 10px 16px;
+	border-radius: var(--border-radius-large, 12px);
+	background: var(--color-main-text);
+	color: var(--color-main-background);
+	box-shadow: 0 0 20px var(--color-box-shadow, rgba(0, 0, 0, .3));
+}

@@ -1,0 +1,329 @@
+# SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# code-server next to Nextcloud, for the Nextcloud app codeserver_layer: one Docker Compose file
+# with four small containers. The guide is docs/hosting.md; the values come from a file .env next
+# to this one (a copy of example.env).
+#
+#   browser --HTTPS--> reverse proxy --> web (nginx) --------------> code-server
+#                                         | asks about each request    | reads and writes
+#                                         v                            v
+#                                        gate (oauth2-proxy)       working copy
+#                                         | sign-in                    ^
+#                                         v                            | nextcloudcmd
+#                                        Nextcloud (app oidc) <----- sync, every 30 s
+#
+#  sync         Nextcloud's command-line client in a loop: keeps the working copy and the folder
+#               NEXTCLOUD_FOLDER of the account NEXTCLOUD_USER the same.
+#  code-server  code-server from its release package, as CODE_UID:CODE_GID, without a sign-in of
+#               its own (--auth none): only web reaches it, and only after gate said yes.
+#  gate         oauth2-proxy: signs people in with Nextcloud (its app oidc); who may sign in is
+#               the group the oidc client is limited to.
+#  web          nginx: asks gate about each request, then passes it to code-server with its
+#               WebSockets and its Host header. The only container with a published port.
+#
+# Keep in mind:
+#  - The images of sync and code-server are built here (pull_policy: build), at every
+#    "docker compose up", from Docker's build cache unless their build changed. A new code-server:
+#    CODE_SERVER_VERSION and the SHA-256 digests of code-server_<version>_amd64.deb and _arm64.deb
+#    change together (the release page shows each asset's digest); raise the image tag with them.
+#  - code-server lets a WebSocket through only when its Origin matches the Host header, so web
+#    passes $http_host on, and so must your reverse proxy.
+#  - Open connections stay open when a sign-in expires; to cut everyone off, stop the stack.
+#  - "$$" is Compose's escape for "$".
+
+name: code-server
+
+services:
+  sync:
+    image: local/nextcloud-sync:trixie-1
+    # Built here and never pulled from a registry; Docker's build cache makes the rebuild at every
+    # "docker compose up" quick.
+    pull_policy: build
+    build:
+      args:
+        CODE_UID: ${CODE_UID:-1000}
+        CODE_GID: ${CODE_GID:-1000}
+      # -o: CODE_UID may be one the base image has already (33 for www-data, 65534 for nobody).
+      dockerfile_inline: |
+        FROM debian:trixie-slim
+        ARG CODE_UID=1000
+        ARG CODE_GID=1000
+        RUN set -eux; \
+            apt-get update; \
+            apt-get install -y --no-install-recommends ca-certificates nextcloud-desktop-cmd; \
+            rm -rf /var/lib/apt/lists/*; \
+            getent group "$$CODE_GID" >/dev/null || groupadd -g "$$CODE_GID" ncsync; \
+            useradd -o -u "$$CODE_UID" -g "$$CODE_GID" -d /tmp -M -s /bin/sh ncsync
+        USER ncsync
+    restart: unless-stopped
+    init: true
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -u
+        trap 'exit 0' TERM
+        # One server only, so netrc's default entry; a machine entry would have to match the host
+        # name exactly as nextcloudcmd normalises it.
+        (umask 077; printf 'default login %s password %s\n' "$$NEXTCLOUD_USER" "$$NEXTCLOUD_APP_PASSWORD" > "$$HOME/.netrc")
+        echo "$$(date '+%F %T') syncing $$NEXTCLOUD_FOLDER of $$NEXTCLOUD_USER with /workspace"
+        while true; do
+          nextcloudcmd -s --non-interactive -n --path "$$NEXTCLOUD_FOLDER" /workspace "$$NEXTCLOUD_URL"
+          rc=$$?
+          conflicts=$$(find /workspace -name '*(conflicted copy *' | wc -l)
+          echo "$$(date '+%F %T') nextcloudcmd exit $$rc, conflicted copies $$conflicts"
+          if [ "$$rc" -eq 0 ]; then
+            [ "$$conflicts" -gt 0 ] || touch /tmp/sync.ok
+            sleep "$$SYNC_INTERVAL" & wait $$!
+          else
+            sleep 300 & wait $$!
+          fi
+        done
+    environment:
+      HOME: /tmp
+      TZ: ${TZ:-Etc/UTC}
+      NEXTCLOUD_URL: ${NEXTCLOUD_URL:?set NEXTCLOUD_URL in .env}
+      NEXTCLOUD_USER: ${NEXTCLOUD_USER:?set NEXTCLOUD_USER in .env}
+      NEXTCLOUD_FOLDER: ${NEXTCLOUD_FOLDER:?set NEXTCLOUD_FOLDER in .env}
+      NEXTCLOUD_APP_PASSWORD: ${NEXTCLOUD_APP_PASSWORD:?set NEXTCLOUD_APP_PASSWORD in .env}
+      SYNC_INTERVAL: ${SYNC_INTERVAL:-30}
+    volumes:
+      - ${CODE_WORKSPACE_DIR:?set CODE_WORKSPACE_DIR in .env}:/workspace
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    pids_limit: 256
+    mem_limit: 1g
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    stop_grace_period: 60s
+    healthcheck:
+      # Healthy while the last 15 minutes had a run without errors and without conflict copies.
+      test: ["CMD-SHELL", "find /tmp/sync.ok -mmin -15 | grep -q ."]
+      interval: 1m
+      timeout: 10s
+      retries: 1
+      start_period: 30m
+
+  code-server:
+    image: local/code-server:4.141.0-1
+    pull_policy: build
+    build:
+      args:
+        CODE_UID: ${CODE_UID:-1000}
+        CODE_GID: ${CODE_GID:-1000}
+      dockerfile_inline: |
+        FROM debian:trixie-slim
+        ARG TARGETARCH
+        ARG CODE_UID=1000
+        ARG CODE_GID=1000
+        ARG CODE_SERVER_VERSION=4.141.0
+        ARG CODE_SERVER_SHA256_amd64=f384beb4f3ba207e0bca27d0dbd36dd825d5aa909d78c6d4baa8703eaf6b77ba
+        ARG CODE_SERVER_SHA256_arm64=0bca33a9b01180ad88f0b8969a8e34ae1c76417df471697e7cd65c20ef5dd60d
+        RUN set -eux; \
+            case "$$TARGETARCH" in \
+              amd64) sha="$$CODE_SERVER_SHA256_amd64" ;; \
+              arm64) sha="$$CODE_SERVER_SHA256_arm64" ;; \
+              *) echo "code-server has no package for $$TARGETARCH" >&2; exit 1 ;; \
+            esac; \
+            apt-get update; \
+            apt-get install -y --no-install-recommends bash ca-certificates curl git less procps tzdata; \
+            curl -fsSL -o /tmp/code-server.deb "https://github.com/coder/code-server/releases/download/v$${CODE_SERVER_VERSION}/code-server_$${CODE_SERVER_VERSION}_$${TARGETARCH}.deb"; \
+            echo "$$sha  /tmp/code-server.deb" | sha256sum -c -; \
+            apt-get install -y --no-install-recommends /tmp/code-server.deb; \
+            rm -f /tmp/code-server.deb; \
+            rm -rf /var/lib/apt/lists/*; \
+            getent group "$$CODE_GID" >/dev/null || groupadd -g "$$CODE_GID" coder; \
+            useradd -o -u "$$CODE_UID" -g "$$CODE_GID" -d /home/coder -M -s /bin/bash coder
+        ENV HOME=/home/coder USER=coder SHELL=/bin/bash LANG=C.UTF-8
+        USER coder
+        WORKDIR /home/coder
+    restart: unless-stopped
+    init: true
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -u
+        d=$$HOME/.local/share/code-server
+        mkdir -p "$$d/Machine"
+        # Settings for everyone on this code-server, written at every start; a user's own settings
+        # cannot override them (docs/hosting.md, "code-server's settings").
+        cat > "$$d/Machine/settings.json" <<'EOF'
+        {
+          "files.autoSave": "off",
+          "files.eol": "\n",
+          "[bat]": { "files.eol": "\r\n" },
+          "git.enabled": false,
+          "files.exclude": { "**/.sync_*.db*": true },
+          "files.watcherExclude": { "**/.git/**": true, "**/node_modules/**": true, "**/.venv/**": true, "**/.sync_*.db*": true },
+          "search.exclude": { "**/node_modules": true, "**/.venv": true }
+        }
+        EOF
+        exec code-server --bind-addr 0.0.0.0:8080 --auth none --disable-proxy --disable-telemetry --disable-update-check
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - ${CODE_HOME_DIR:?set CODE_HOME_DIR in .env}:/home/coder
+      - ${CODE_WORKSPACE_DIR:?set CODE_WORKSPACE_DIR in .env}:/workspace
+    tmpfs:
+      - /tmp:size=1g,mode=1777,exec
+    pids_limit: 2048
+    mem_limit: 4g
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 2m
+
+  gate:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.5-alpine
+    restart: unless-stopped
+    user: "65534:65534"
+    environment:
+      OAUTH2_PROXY_PROVIDER: "oidc"
+      OAUTH2_PROXY_OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?set OIDC_ISSUER_URL in .env}
+      OAUTH2_PROXY_CLIENT_ID: ${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID in .env}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET in .env}
+      OAUTH2_PROXY_COOKIE_SECRET: ${OIDC_COOKIE_SECRET:?set OIDC_COOKIE_SECRET in .env}
+      OAUTH2_PROXY_REDIRECT_URL: ${CODE_URL:?set CODE_URL in .env}/oauth2/callback
+      OAUTH2_PROXY_UPSTREAMS: "static://202"
+      OAUTH2_PROXY_HTTP_ADDRESS: "0.0.0.0:4180"
+      OAUTH2_PROXY_SCOPE: "openid"
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"
+      # The account id, as not every Nextcloud account has an e-mail address.
+      OAUTH2_PROXY_OIDC_EMAIL_CLAIM: "sub"
+      OAUTH2_PROXY_SKIP_CLAIMS_FROM_PROFILE_URL: "true"
+      OAUTH2_PROXY_CODE_CHALLENGE_METHOD: "S256"
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      OAUTH2_PROXY_COOKIE_NAME: "__Host-code-server"
+      OAUTH2_PROXY_COOKIE_SECURE: "true"
+      OAUTH2_PROXY_COOKIE_SAMESITE: "lax"
+      OAUTH2_PROXY_COOKIE_EXPIRE: "12h"
+      OAUTH2_PROXY_COOKIE_CSRF_PER_REQUEST: "true"
+      OAUTH2_PROXY_SESSION_COOKIE_MINIMAL: "true"
+      OAUTH2_PROXY_SILENCE_PING_LOGGING: "true"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4180/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  web:
+    image: nginxinc/nginx-unprivileged:1.30-alpine-slim
+    restart: unless-stopped
+    depends_on:
+      - gate
+      - code-server
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        cat > /tmp/nginx.conf <<'EOF'
+        worker_processes 2;
+        pid /tmp/nginx.pid;
+        error_log /dev/stderr warn;
+        events {
+          worker_connections 1024;
+        }
+        http {
+          client_body_temp_path /tmp/client_temp;
+          proxy_temp_path /tmp/proxy_temp;
+          fastcgi_temp_path /tmp/fastcgi_temp;
+          uwsgi_temp_path /tmp/uwsgi_temp;
+          scgi_temp_path /tmp/scgi_temp;
+          access_log off;
+          server_tokens off;
+          absolute_redirect off;
+          # Docker's DNS: the containers are looked up when a request comes, not at the start.
+          resolver 127.0.0.11 valid=10s ipv6=off;
+
+          map $$http_upgrade $$connection_upgrade {
+            default upgrade;
+            "" close;
+          }
+
+          # After the sign-in, back to the address that was asked for (with the app's folder and
+          # file in it), but never to a page of the sign-in itself.
+          map $$request_uri $$return_to {
+            default $$request_uri;
+            ~^/oauth2/ "";
+          }
+
+          server {
+            listen 8080;
+            client_max_body_size 0;
+            set $$gate http://gate:4180;
+            set $$ide http://code-server:8080;
+
+            # 'self', never 'none': code-server shows web views in frames of its own address.
+            add_header Content-Security-Policy "frame-ancestors 'self'" always;
+
+            auth_request /oauth2/auth;
+            error_page 401 = /oauth2/sign_in;
+
+            location = /oauth2/auth {
+              internal;
+              auth_request off;
+              proxy_pass $$gate;
+              proxy_pass_request_body off;
+              proxy_set_header Content-Length "";
+              proxy_set_header Host $$host;
+              proxy_set_header X-Forwarded-Uri $$request_uri;
+            }
+
+            location /oauth2/ {
+              auth_request off;
+              proxy_pass $$gate;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Auth-Request-Redirect $$return_to;
+            }
+
+            location = /healthz {
+              auth_request off;
+              default_type text/plain;
+              return 200 "ok\n";
+            }
+
+            location / {
+              proxy_pass $$ide;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$http_host;
+              proxy_set_header Upgrade $$http_upgrade;
+              proxy_set_header Connection $$connection_upgrade;
+              proxy_buffering off;
+            }
+          }
+        }
+        EOF
+        exec nginx -e stderr -c /tmp/nginx.conf -g 'daemon off;'
+    ports:
+      - "${CODE_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

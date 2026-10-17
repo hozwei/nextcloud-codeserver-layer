@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# LF in the repository and in every checkout, also with core.autocrlf on Windows.
+* text=auto eol=lf
+*.png binary

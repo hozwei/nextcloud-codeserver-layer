@@ -1,0 +1,32 @@
+{
+  "name": "hozwei/codeserver-layer",
+  "description": "Nextcloud app that opens files in code-server",
+  "license": "AGPL-3.0-or-later",
+  "homepage": "https://github.com/hozwei/nextcloud-codeserver-layer",
+  "support": {
+    "issues": "https://github.com/hozwei/nextcloud-codeserver-layer/issues",
+    "source": "https://github.com/hozwei/nextcloud-codeserver-layer"
+  },
+  "authors": [
+    {
+      "name": "The nextcloud-codeserver-layer contributors"
+    }
+  ],
+  "require": {
+    "php": "^8.2"
+  },
+  "require-dev": {
+    "nextcloud/ocp": "dev-stable34"
+  },
+  "autoload": {
+    "psr-4": {
+      "OCA\\CodeserverLayer\\": "lib/"
+    }
+  },
+  "config": {
+    "platform": {
+      "php": "8.2"
+    },
+    "sort-packages": true
+  }
+}

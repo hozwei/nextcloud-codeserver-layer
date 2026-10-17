@@ -1,0 +1,20 @@
+# Copyright and license of the files that cannot carry an SPDX header of their own, in the format
+# of the REUSE specification 3.3 (https://reuse.software/spec-3.3/). Every other file has the
+# header itself. LICENSE is the license text itself.
+version = 1
+
+# JSON has no comments; l10n/*.js is written from l10n/*.json by codeserver_layer/l10n.mjs.
+[[annotations]]
+path = [
+  "package.json",
+  "package-lock.json",
+  "tests/tsconfig.json",
+  "tests/e2e/versions.json",
+  "codeserver_layer/composer.json",
+  "codeserver_layer/tsconfig.json",
+  "codeserver_layer/l10n/*.json",
+  "codeserver_layer/l10n/*.js",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 The nextcloud-codeserver-layer contributors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"

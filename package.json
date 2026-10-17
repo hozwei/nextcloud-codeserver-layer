@@ -1,0 +1,40 @@
+{
+  "name": "nextcloud-codeserver-layer",
+  "private": true,
+  "description": "Open files from Nextcloud in code-server: the Nextcloud app's front end, its tests and tooling",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node codeserver_layer/build.mjs",
+    "build:dev": "node codeserver_layer/build.mjs --dev",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tests/tsconfig.json && tsc -p codeserver_layer/tsconfig.json",
+    "l10n:check": "node codeserver_layer/l10n.mjs check",
+    "l10n:write": "node codeserver_layer/l10n.mjs write",
+    "marks:check": "node codeserver_layer/marks.mjs",
+    "test:unit": "node --test \"tests/unit/*.test.ts\"",
+    "test:e2e": "playwright test -c tests/e2e/playwright.config.ts",
+    "codeserver:fetch": "node tests/e2e/tools/fetch-codeserver.mjs",
+    "test": "npm run lint && npm run typecheck && npm run l10n:check && npm run marks:check && npm run test:unit"
+  },
+  "dependencies": {
+    "@mdi/svg": "7.4.47",
+    "@nextcloud/files": "4.1.0",
+    "@nextcloud/l10n": "3.4.1",
+    "@nextcloud/router": "3.2.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.19.2",
+    "esbuild": "0.28.2",
+    "eslint": "10.12.0",
+    "eslint-plugin-playwright": "2.12.1",
+    "globals": "17.13.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.1"
+  }
+}

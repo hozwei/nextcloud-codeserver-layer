@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+node_modules/
+test-results/
+playwright-report/
+docs-screenshots/
+blob-report/
+.codeserver/
+/codeserver_layer/js/
+/codeserver_layer/vendor/
+/codeserver_layer/build/
+*.log
+/.claude/
+# hosting/example.env filled in: passwords and secrets
+/hosting/.env

@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# For the CI job 'hosting' (.github/workflows/ci.yml), on top of hosting/compose.example.yaml:
+#  - gate answers every check with 202, so the tests reach code-server through web without the
+#    sign-in with Nextcloud's app oidc, which this job does not test;
+#  - a test Nextcloud for the sync, on port 8081 for the test machine and as http://nextcloud for
+#    the containers.
+
+services:
+  gate:
+    image: nginxinc/nginx-unprivileged:1.30-alpine-slim
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /tmp/gate.conf <<'EOF'
+        pid /tmp/nginx.pid;
+        error_log /dev/stderr warn;
+        events {}
+        http {
+          access_log off;
+          client_body_temp_path /tmp/client_temp;
+          proxy_temp_path /tmp/proxy_temp;
+          fastcgi_temp_path /tmp/fastcgi_temp;
+          uwsgi_temp_path /tmp/uwsgi_temp;
+          scgi_temp_path /tmp/scgi_temp;
+          server {
+            listen 4180;
+            location = /ping { return 200; }
+            location / { return 202; }
+          }
+        }
+        EOF
+        exec nginx -c /tmp/gate.conf -g 'daemon off;'
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+
+  nextcloud:
+    image: nextcloud:${CI_NEXTCLOUD_VERSION:-35.0.1}-apache
+    environment:
+      SQLITE_DATABASE: nextcloud
+      NEXTCLOUD_ADMIN_USER: admin
+      NEXTCLOUD_ADMIN_PASSWORD: e2e-admin-password
+      NEXTCLOUD_TRUSTED_DOMAINS: localhost nextcloud
+    ports:
+      - "8081:80"

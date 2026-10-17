@@ -1,0 +1,472 @@
+# SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Checks every change: the sources (lint, types, translations, trademarks, unit tests, REUSE), the
+# Nextcloud app (php -l on every supported PHP, the App Store schema and package), the app in a
+# real Nextcloud 34 and 35, and the addresses it builds in a real code-server, all of the tested
+# versions (tests/e2e/versions.json). canary.yml tests the newest releases daily.
+#
+# Actions are pinned to full commit SHAs (version in the trailing comment) so a moved tag cannot
+# change what runs here; Dependabot proposes the updates (.github/dependabot.yml).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request replaces its running checks. Other runs get a group of their own,
+# because a group also drops queued runs, and every commit on main should be checked.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      # None of the dependencies needs an install script; skipping them keeps a compromised
+      # package release from running code at install time.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      # Every text the app shows has its German translations, and l10n/*.js matches l10n/*.json.
+      - name: Check translations
+        run: npm run l10n:check
+
+      # No "VS Code" in the app's name and texts (Microsoft's trademark guidelines).
+      - name: Check trademarks
+        run: npm run marks:check
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: REUSE compliance
+        run: pipx run reuse==6.2.0 lint
+
+  nextcloud-app:
+    name: nextcloud-app (PHP ${{ matrix.php }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The PHP versions Nextcloud supports for the app's server range.
+        php: ['8.2', '8.3', '8.4', '8.5']
+        # Schema check and package once, on the oldest PHP.
+        include:
+          - php: '8.2'
+            package: true
+    env:
+      APP: codeserver_layer
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      # php -l without php.ini; a compile-time deprecation fails too, as it becomes an error in a
+      # later PHP release. Also checks the changelog section for the version in info.xml.
+      - name: Lint PHP
+        run: make -C "$APP" lint-php lint-changelog
+
+      - name: Validate appinfo/info.xml against the App Store schema
+        if: matrix.package
+        env:
+          # The nextcloud/appstore commit to take info.xsd from, so a change there cannot break
+          # this check without a change here (Dependabot does not update it). To update, take the
+          # commit from `git ls-remote https://github.com/nextcloud/appstore refs/heads/master`,
+          # read what changed in nextcloudappstore/api/v1/release/info.xsd since this one, and set
+          # it here; at the latest before a release and when the app's Nextcloud range moves.
+          SCHEMA_COMMIT: d7b4b188d60a3223cf916b95dfa47e7f9431c367
+        run: |
+          command -v xmllint >/dev/null || {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends libxml2-utils
+          }
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/info.xsd" \
+            "https://raw.githubusercontent.com/nextcloud/appstore/$SCHEMA_COMMIT/nextcloudappstore/api/v1/release/info.xsd"
+          make -C "$APP" lint-xml INFO_XSD="$RUNNER_TEMP/info.xsd"
+          id=$(xmllint --xpath 'string(/info/id)' "$APP/appinfo/info.xml")
+          if [ "$id" != "$APP" ]; then
+            echo "::error file=$APP/appinfo/info.xml::<id> is '$id', expected '$APP'"
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        if: matrix.package
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        if: matrix.package
+        run: npm ci --ignore-scripts
+
+      - name: Build the App Store package
+        if: matrix.package
+        run: |
+          make -C "$APP" appstore
+          tarball="$APP/build/artifacts/$APP.tar.gz"
+          tar -tzvf "$tarball"
+          # The App Store's archive rules: one top folder named like the app id, appinfo/info.xml
+          # inside it, and no .git folder.
+          entries=$(tar -tzf "$tarball" | sed 's#^\./##')
+          if grep -v -e "^$APP/" -e "^$APP\$" <<<"$entries"; then
+            echo "::error::$tarball has entries outside $APP/ (listed above)"
+            exit 1
+          fi
+          if grep -E '(^|/)\.git(/|$)' <<<"$entries"; then
+            echo "::error::$tarball contains a .git folder (listed above)"
+            exit 1
+          fi
+
+      # For trying a pull request in a real Nextcloud.
+      - name: Upload the App Store package
+        if: matrix.package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.APP }}-appstore
+          path: ${{ env.APP }}/build/artifacts/*.tar.gz
+          retention-days: 14
+          overwrite: true
+
+  # The tested Nextcloud releases, one per major of info.xml's range, from tests/e2e/versions.json
+  # (nextcloud.tested), which canary.yml compares with the newest releases. Dependabot does not
+  # update them: raise them there when the canary says a newer release passes, and add one when
+  # info.xml's max-version grows.
+  versions:
+    name: tested versions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      nextcloud: ${{ steps.read.outputs.nextcloud }}
+      newest: ${{ steps.read.outputs.newest }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read tests/e2e/versions.json
+        id: read
+        run: |
+          echo "nextcloud=$(node -p "JSON.stringify(require('./tests/e2e/versions.json').nextcloud.tested)")" >> "$GITHUB_OUTPUT"
+          echo "newest=$(node -p "require('./tests/e2e/versions.json').nextcloud.tested.at(-1)")" >> "$GITHUB_OUTPUT"
+
+  # The app in a real Nextcloud: the Files entries and their addresses, "+ New", the warnings, the
+  # settings, the file types next to the Craft Suite Layer, the German texts. Once per tested
+  # Nextcloud release, in its official image, with the App Store package as users install it.
+  nextcloud-e2e:
+    name: nextcloud-e2e (${{ matrix.nextcloud }})
+    needs: versions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        nextcloud: ${{ fromJSON(needs.versions.outputs.nextcloud) }}
+    env:
+      # A throwaway instance on the runner; the passwords protect nothing.
+      NEXTCLOUD_URL: http://localhost:8080
+      NEXTCLOUD_CONTAINER: nextcloud
+      NEXTCLOUD_PASSWORD: e2e-admin-password
+      E2E_PASSWORD_SUFFIX: -password-4b7e9d
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # The archive's staged folder: only the files the App Store package ships.
+      - name: Build the App Store package
+        run: make -C codeserver_layer appstore
+
+      - name: Start Nextcloud ${{ matrix.nextcloud }}
+        env:
+          IMAGE: nextcloud:${{ matrix.nextcloud }}-apache
+        run: |
+          docker run -d --name nextcloud -p 8080:80 \
+            -e SQLITE_DATABASE=nextcloud \
+            -e NEXTCLOUD_ADMIN_USER=admin -e NEXTCLOUD_ADMIN_PASSWORD="$NEXTCLOUD_PASSWORD" \
+            -e NEXTCLOUD_TRUSTED_DOMAINS=localhost \
+            -v "$PWD/codeserver_layer/build/stage/codeserver_layer:/var/www/html/custom_apps/codeserver_layer" \
+            "$IMAGE"
+
+      # The Craft Suite Layer writes the same MIME type files: the release in versions.json, from
+      # its plain download URL, checked against the pinned SHA-256.
+      - name: Fetch the Craft Suite Layer
+        id: craft
+        timeout-minutes: 5
+        run: |
+          archive=$(node tests/e2e/tools/fetch-craftsuite-layer.mjs "$RUNNER_TEMP/craft")
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Set up the app in Nextcloud
+        timeout-minutes: 10
+        env:
+          CRAFT: ${{ steps.craft.outputs.archive }}
+        run: sh tests/e2e/tools/setup-nextcloud.sh nextcloud "$NEXTCLOUD_URL" "$CRAFT"
+
+      # Below the job's limit, so a hang fails the step and the log and report below still come.
+      - name: End-to-end tests in Nextcloud
+        timeout-minutes: 20
+        run: npm run test:e2e -- --project=nextcloud-chromium
+
+      - name: Nextcloud log
+        if: failure()
+        run: docker exec nextcloud cat /var/www/html/data/nextcloud.log || docker logs nextcloud
+
+      - name: Upload Playwright report and test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-nextcloud-${{ matrix.nextcloud }}
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+
+      # Screenshots for the documentation (docs/img/), in the newest tested Nextcloud only; they
+      # cannot fail the job. Take them from the artifact docs-screenshots.
+      - name: Screenshots for the documentation
+        if: ${{ !cancelled() && matrix.nextcloud == needs.versions.outputs.newest }}
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          SCREENSHOTS_DIR: docs-screenshots
+        run: npm run test:e2e -- --project=screenshots-chromium --output test-results/screenshots
+
+      - name: Upload the screenshots
+        if: ${{ !cancelled() && matrix.nextcloud == needs.versions.outputs.newest }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docs-screenshots
+          path: docs-screenshots/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # The addresses the app builds, in a real code-server of the tested version.
+  codeserver-e2e:
+    name: codeserver-e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Cache code-server
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .codeserver/*.tar.gz
+          key: code-server-${{ hashFiles('tests/e2e/versions.json') }}
+
+      # bash: with pipefail, a failed download or checksum stops here and not at the start below.
+      - name: Start code-server
+        shell: bash
+        run: |
+          dir=$(node tests/e2e/tools/fetch-codeserver.mjs | tail -1)
+          mkdir -p "$RUNNER_TEMP/workspace"
+          sh tests/e2e/tools/start-codeserver.sh "$dir" "$RUNNER_TEMP/code-server" 8090
+
+      - name: End-to-end tests in code-server
+        timeout-minutes: 8
+        env:
+          CODESERVER_URL: http://127.0.0.1:8090/
+        run: CODESERVER_WORKSPACE="$RUNNER_TEMP/workspace" CODESERVER_HOST_DIR="$RUNNER_TEMP/workspace" npm run test:e2e -- --project=codeserver-chromium
+
+      - name: code-server log
+        if: failure()
+        run: cat "$RUNNER_TEMP/code-server/code-server.log" || true
+
+      - name: Upload Playwright report and test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-codeserver
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14
+
+  # The hosting example (hosting/compose.example.yaml, docs/hosting.md) as users run it: both
+  # images built, the sync against a test Nextcloud in both directions, and the app's addresses in
+  # the built code-server through web. Only the sign-in with Nextcloud's app oidc is replaced
+  # (tests/e2e/hosting/compose.ci.yaml): it needs a browser login at a real provider.
+  hosting:
+    name: hosting example
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      COMPOSE_FILE: hosting/compose.example.yaml:tests/e2e/hosting/compose.ci.yaml
+      NEXTCLOUD: http://localhost:8081
+      ALICE_PASSWORD: e2e-alice-password-5c1d
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # The values a user puts into hosting/.env; the app password follows once Nextcloud is up.
+      # The sign-in values only have to be there.
+      - name: Write hosting/.env
+        run: |
+          mkdir -p "$RUNNER_TEMP/workspace" "$RUNNER_TEMP/home"
+          cat > hosting/.env <<EOF
+          CODE_URL=http://localhost:8080
+          CODE_PORT=8080
+          CODE_UID=$(id -u)
+          CODE_GID=$(id -g)
+          CODE_WORKSPACE_DIR=$RUNNER_TEMP/workspace
+          CODE_HOME_DIR=$RUNNER_TEMP/home
+          NEXTCLOUD_URL=http://nextcloud
+          NEXTCLOUD_USER=alice
+          NEXTCLOUD_FOLDER=/Projects
+          NEXTCLOUD_APP_PASSWORD=not-yet
+          SYNC_INTERVAL=5
+          OIDC_ISSUER_URL=https://unused.example.com
+          OIDC_CLIENT_ID=unused
+          OIDC_CLIENT_SECRET=unused
+          OIDC_COOKIE_SECRET=unused
+          CI_NEXTCLOUD_VERSION=$(node -p "require('./tests/e2e/versions.json').nextcloud.tested.at(-1)")
+          EOF
+          docker compose config --quiet
+          # The tests' interface settings, as code-server's user settings: the example writes only
+          # its machine settings, and the chat panel would take the keyboard focus from the editor.
+          mkdir -p "$RUNNER_TEMP/home/.local/share/code-server/User"
+          echo '{ "chat.disableAIFeatures": true, "workbench.secondarySideBar.defaultVisibility": "hidden", "workbench.startupEditor": "none" }' \
+            > "$RUNNER_TEMP/home/.local/share/code-server/User/settings.json"
+
+      - name: Build the images
+        timeout-minutes: 10
+        run: docker compose build
+
+      # bash: with pipefail, a failing occ fails here and not two steps later.
+      - name: Start the test Nextcloud with a folder for the sync
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          docker compose up -d nextcloud
+          tries=0
+          until curl -fsS "$NEXTCLOUD/status.php" 2>/dev/null | grep -q '"installed":true'; do
+            tries=$((tries + 1)); [ "$tries" -lt 120 ] || { docker compose logs nextcloud; exit 1; }
+            sleep 5
+          done
+          docker compose exec -T -u www-data -e OC_PASS="$ALICE_PASSWORD" nextcloud php occ user:add --password-from-env alice
+          dav="$NEXTCLOUD/remote.php/dav/files/alice"
+          curl -fsS -u "alice:$ALICE_PASSWORD" -X MKCOL "$dav/Projects"
+          curl -fsS -u "alice:$ALICE_PASSWORD" -X MKCOL "$dav/Projects/Synced"
+          printf 'Write-Output "from Nextcloud"\n' | curl -fsS -u "alice:$ALICE_PASSWORD" -T - "$dav/Projects/Synced/down.ps1"
+          token=$(docker compose exec -T -u www-data -e NC_PASS="$ALICE_PASSWORD" nextcloud php occ user:auth-tokens:add --password-from-env alice | tail -1 | tr -d '\r')
+          [[ $token =~ ^[A-Za-z0-9]{72}$ ]] || { echo "::error::occ user:auth-tokens:add returned no app password"; exit 1; }
+          echo "::add-mask::$token"
+          sed -i "s|^NEXTCLOUD_APP_PASSWORD=.*|NEXTCLOUD_APP_PASSWORD=$token|" hosting/.env
+
+      # The sync on its own, so that a failing sync fails its own steps below.
+      - name: Start the stack
+        timeout-minutes: 5
+        run: |
+          docker compose up -d --wait code-server gate web
+          docker compose up -d sync
+
+      - name: The sync brings a file from Nextcloud
+        timeout-minutes: 3
+        run: |
+          until [ -f "$RUNNER_TEMP/workspace/Synced/down.ps1" ]; do sleep 2; done
+          grep -q 'from Nextcloud' "$RUNNER_TEMP/workspace/Synced/down.ps1"
+
+      # Before the code-server tests, whose awkward names the sync then uploads as well.
+      - name: The sync brings a file to Nextcloud
+        timeout-minutes: 3
+        run: |
+          printf 'saved in code-server\n' > "$RUNNER_TEMP/workspace/Synced/up.txt"
+          until curl -fsS -u "alice:$ALICE_PASSWORD" "$NEXTCLOUD/remote.php/dav/files/alice/Projects/Synced/up.txt" 2>/dev/null | grep -q 'saved in code-server'; do sleep 2; done
+
+      - name: The app's addresses in the built code-server, through web
+        timeout-minutes: 8
+        env:
+          CODESERVER_URL: http://localhost:8080/
+        run: CODESERVER_WORKSPACE=/workspace CODESERVER_HOST_DIR="$RUNNER_TEMP/workspace" npm run test:e2e -- --project=codeserver-chromium
+
+      - name: Logs of the stack
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Upload Playwright report and test results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-hosting
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14

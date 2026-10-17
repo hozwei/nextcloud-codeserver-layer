@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<!--
+  - SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
+  - SPDX-License-Identifier: AGPL-3.0-or-later
+  -
+  - Elements stay in the order of the App Store schema: `make lint INFO_XSD=...` validates this
+  - file as it is, without the reordering the App Store applies before its own check.
+-->
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+  <id>codeserver_layer</id>
+  <name>code-server Layer</name>
+  <summary>Open your code and text files from Nextcloud in code-server, in a new tab</summary>
+  <description>code-server Layer opens the files of a folder of yours in code-server, the editor that runs on a server and in the browser. It is meant for a code-server that works on a copy of that folder, kept in sync with Nextcloud.
+
+**Status:** early. Files offers "Open in code-server" for common text and programming formats (PowerShell, shell, Python, web, JSON, YAML, TOML, XML, INI, logs, Markdown, C and C#, Java, Go, Rust, SQL, Terraform, Dockerfile and more), and opens them on a click where no other app does, or for all of them as the default app. "+ New" entries create a file in code-server. Code formats Nextcloud does not know get its code icon. Opening warns when the file changed in Nextcloud moments ago or is open in Nextcloud Text. English and German.
+
+Needs a code-server reachable by the browser and a sync between Nextcloud and its working copy. Not affiliated with Coder or Microsoft. Source code and documentation: https://github.com/hozwei/nextcloud-codeserver-layer</description>
+  <version>0.1.0</version>
+  <licence>AGPL-3.0-or-later</licence>
+  <author>The nextcloud-codeserver-layer contributors</author>
+  <namespace>CodeserverLayer</namespace>
+  <category>integration</category>
+  <category>files</category>
+  <website>https://github.com/hozwei/nextcloud-codeserver-layer</website>
+  <bugs>https://github.com/hozwei/nextcloud-codeserver-layer/issues</bugs>
+  <repository type="git">https://github.com/hozwei/nextcloud-codeserver-layer.git</repository>
+  <dependencies>
+    <!-- Only what CI covers: each Nextcloud version end to end (on the images' PHP 8.5),
+         PHP 8.2 to 8.4 with php -l only. Widen the ranges together with the test matrix. -->
+    <php min-version="8.2" max-version="8.5"/>
+    <nextcloud min-version="34" max-version="35"/>
+  </dependencies>
+  <!-- The code file types: install runs on every enable, post-migration after an update,
+       uninstall on every disable (lib/Service/FileTypes.php). -->
+  <repair-steps>
+    <post-migration>
+      <step>OCA\CodeserverLayer\Migration\RegisterFileTypes</step>
+    </post-migration>
+    <install>
+      <step>OCA\CodeserverLayer\Migration\RegisterFileTypes</step>
+    </install>
+    <uninstall>
+      <step>OCA\CodeserverLayer\Migration\UnregisterFileTypes</step>
+    </uninstall>
+  </repair-steps>
+  <commands>
+    <command>OCA\CodeserverLayer\Command\Folder</command>
+  </commands>
+  <settings>
+    <admin>OCA\CodeserverLayer\Settings\Admin</admin>
+    <admin-section>OCA\CodeserverLayer\Settings\AdminSection</admin-section>
+    <personal>OCA\CodeserverLayer\Settings\Personal</personal>
+    <personal-section>OCA\CodeserverLayer\Settings\PersonalSection</personal-section>
+  </settings>
+</info>
