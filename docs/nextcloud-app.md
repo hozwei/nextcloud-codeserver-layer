@@ -551,7 +551,9 @@ minutes after the next connection.
 
 **No "Open in code-server" in Files.**
 
-- Reload Files: it reads the settings when the page loads.
+- Reload Files: it reads the settings when the page loads. A value set with `occ` reaches the web
+  server after a few seconds (Nextcloud's local cache of the app config), one saved on the
+  administration page at once.
 - Is the app enabled for the user? `occ config:app:get codeserver_layer enabled` prints `yes` or
   the groups.
 - Are `url`, and `workspace` or `account_workspace`, usable? **Administration settings >

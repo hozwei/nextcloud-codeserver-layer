@@ -80,8 +80,9 @@ it unpacks it for the test next to it; without one, that test is skipped.
 `node tests/e2e/tools/fetch-craftsuite-layer.mjs <folder>` downloads the release that
 `tests/e2e/versions.json` names and checks its SHA-256; with `--latest`, the newest release,
 checked against its `SHA256SUMS`. The tests change settings and restore them; Nextcloud keeps
-the app config in a local cache for 3 seconds, which `configSettled()` waits out where a page is
-already open.
+the app config in a local cache for 3 seconds, and a request that loads lazy values meanwhile can
+store the old values again for another 3, which `configSettled()` (7 seconds) waits out where a
+page is already open.
 
 ## Tests in code-server
 

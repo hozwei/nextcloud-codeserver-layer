@@ -48,12 +48,15 @@ export function setApp(key: string, value: string | boolean | number): void {
 }
 
 /**
- * Waits until the web server sees a setting occ changed: Nextcloud keeps the app config in a local
- * memory cache for 3 s (AppConfig::LOCAL_CACHE_TTL). Only needed for a page already open.
+ * Waits until the web server sees a setting occ changed. Nextcloud keeps the app config in a local
+ * memory cache (APCu in the official image) for 3 s (AppConfig::LOCAL_CACHE_TTL), and a request
+ * that then loads the lazy values stores the cached values again, the old ones with them, for
+ * another 3 s (AppConfig::loadConfig; Text's requests on closing a file did so in 35.0.2). Only
+ * needed for a page already open.
  */
 export async function configSettled(page: Page): Promise<void> {
   // eslint-disable-next-line playwright/no-wait-for-timeout
-  await page.waitForTimeout(3500);
+  await page.waitForTimeout(7000);
 }
 
 const auth = (account: Account) => ({ Authorization: 'Basic ' + Buffer.from(`${account.user}:${account.password}`).toString('base64') });
