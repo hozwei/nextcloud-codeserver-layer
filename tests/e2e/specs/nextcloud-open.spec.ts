@@ -15,7 +15,7 @@
 
 import { test, expect } from '@playwright/test';
 import {
-  clickMenuItem, confirmIfAsked, Dav, dialog, introSeen, login, menu, occ, OTHER, openFolder, opensNoTab, opensTab, row, setApp, untraced, USER, WORKSPACE, NC,
+  CAPTURE, clickMenuItem, confirmIfAsked, Dav, dialog, introSeen, login, menu, occ, OTHER, openFolder, opensNoTab, opensTab, row, setApp, untraced, USER, WORKSPACE, NC,
 } from '../lib/nextcloud.ts';
 
 const FILES = ['run.ps1', 'settings.ini', 'server.log', 'compose.yaml', 'notes.md', 'Dockerfile', '.env.local', 'a #1 %.ps1', 'Übersicht.ps1', 'Report.PS1'];
@@ -54,7 +54,7 @@ test('click and menu: code-server for the formats no other app opens, the menu f
     const opened = await opensTab(page, click(page, 'run.ps1'));
     expect(opened.folder).toBe(`${WORKSPACE}/My App`);
     expect(opened.file).toBe(`${WORKSPACE}/My App/run.ps1`);
-    expect(opened.authority).toBe('127.0.0.1:8791');
+    expect(opened.authority).toBe(new URL(CAPTURE).host);
   });
 
   await test.step('.ini, .log, Dockerfile, .env.local and .PS1 open on a click too', async () => {

@@ -20,8 +20,8 @@ use OCP\IRequest;
 
 /**
  * Saves the administrator's settings (templates/admin.php, src/admin.ts). Administrators only (no
- * NoAdminRequired), with a recent password confirmation: the address decides where the links in
- * Files point. Every field is checked first; one bad field saves nothing.
+ * NoAdminRequired), with a recent password confirmation: the address and the paths decide where
+ * the links in Files point. Every field is checked first; one bad field saves nothing.
  *
  * Like every route of an app, Nextcloud refuses it for an administrator the app is not enabled for
  * (412, or 404 without a local memory cache); the settings page says so before (Settings/Admin.php).
@@ -46,6 +46,10 @@ class AdminSettingsController extends Controller {
 		mixed $defaultApp = false,
 		mixed $newEntries = [],
 		mixed $syncHintSeconds = Config::DEFAULT_SYNC_HINT,
+		mixed $accountWorkspace = '',
+		mixed $accountDefaultApp = false,
+		mixed $accountSyncHintSeconds = Config::DEFAULT_ACCOUNT_SYNC_HINT,
+		mixed $accountExclude = '',
 	): JSONResponse {
 		$errors = [];
 
@@ -87,10 +91,33 @@ class AdminSettingsController extends Controller {
 			$errors['newEntries'] = $this->l->t('Not a valid choice.');
 		}
 
-		$seconds = is_int($syncHintSeconds) || (is_string($syncHintSeconds) && preg_match('/^\d{1,4}$/', $syncHintSeconds) === 1)
-			? (int)$syncHintSeconds : -1;
-		if ($seconds < 0 || $seconds > Config::MAX_SYNC_HINT) {
+		$seconds = self::seconds($syncHintSeconds);
+		if ($seconds === null) {
 			$errors['syncHintSeconds'] = $this->l->t('Use a number of seconds from 0 to %s.', [(string)Config::MAX_SYNC_HINT]);
+		}
+
+		$accountWorkspace = is_string($accountWorkspace) ? Config::normalizeWorkspace($accountWorkspace) : null;
+		if ($accountWorkspace === null) {
+			$errors['accountWorkspace'] = $this->l->t('Use an absolute path in code-server\'s container, such as /nextcloud/files, without . or .. and without a slash at the end.');
+		} elseif ($accountWorkspace !== '') {
+			$problem = $this->config->accountWorkspaceProblem($accountWorkspace);
+			if ($problem !== null) {
+				$errors['accountWorkspace'] = $problem;
+			}
+		}
+
+		if (!is_bool($accountDefaultApp)) {
+			$errors['accountDefaultApp'] = $this->l->t('Not a valid choice.');
+		}
+
+		$accountSeconds = self::seconds($accountSyncHintSeconds);
+		if ($accountSeconds === null) {
+			$errors['accountSyncHintSeconds'] = $this->l->t('Use a number of seconds from 0 to %s.', [(string)Config::MAX_SYNC_HINT]);
+		}
+
+		[$excludeList, $badExclude] = is_string($accountExclude) ? Config::parseFolders($accountExclude) : [[], '?'];
+		if ($badExclude !== null) {
+			$errors['accountExclude'] = $this->l->t('Not a folder: %s. Give one path in the users\' files per line, such as /Projects, not / itself.', [$badExclude]);
 		}
 
 		if ($errors !== []) {
@@ -103,15 +130,30 @@ class AdminSettingsController extends Controller {
 		$this->appConfig->setValueString(Application::APP_ID, Config::KEY_FILENAMES, implode(',', $filenameList));
 		$this->appConfig->setValueBool(Application::APP_ID, Config::KEY_DEFAULT_APP, (bool)$defaultApp);
 		$this->appConfig->setValueString(Application::APP_ID, Config::KEY_NEW_ENTRIES, implode(',', (array)$entries));
-		$this->appConfig->setValueInt(Application::APP_ID, Config::KEY_SYNC_HINT, $seconds);
+		$this->appConfig->setValueInt(Application::APP_ID, Config::KEY_SYNC_HINT, (int)$seconds);
+		$this->setOrDelete(Config::KEY_ACCOUNT_WORKSPACE, (string)$accountWorkspace);
+		$this->appConfig->setValueBool(Application::APP_ID, Config::KEY_ACCOUNT_DEFAULT_APP, (bool)$accountDefaultApp);
+		$this->appConfig->setValueInt(Application::APP_ID, Config::KEY_ACCOUNT_SYNC_HINT, (int)$accountSeconds);
+		$this->setOrDelete(Config::KEY_ACCOUNT_EXCLUDE, implode("\n", $excludeList));
 
 		return new JSONResponse([
 			'url' => $url,
 			'workspace' => $workspace,
+			'accountWorkspace' => $accountWorkspace,
+			'accountExclude' => implode("\n", $excludeList),
 			'extensions' => implode(' ', $extensionList),
 			'filenames' => implode(' ', $filenameList),
-			'hint' => $this->config->hint(),
+			'syncHintSeconds' => (string)$seconds,
+			'accountSyncHintSeconds' => (string)$accountSeconds,
+			'hint' => $this->config->hint((bool)$defaultApp),
+			'accountHint' => $this->config->hint((bool)$accountDefaultApp),
 		]);
+	}
+
+	/** A number of seconds from 0 to MAX_SYNC_HINT, from the form (a number or digits), or null. */
+	private static function seconds(mixed $value): ?int {
+		$seconds = is_int($value) || (is_string($value) && preg_match('/^\d{1,4}$/', $value) === 1) ? (int)$value : -1;
+		return $seconds < 0 || $seconds > Config::MAX_SYNC_HINT ? null : $seconds;
 	}
 
 	private function setOrDelete(string $key, string $value): void {

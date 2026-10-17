@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Optional, on top of compose.example.yaml: the whole Nextcloud account of NEXTCLOUD_USER in
+# code-server at /nextcloud/files, through a mount over WebDAV, for the app's account access. No
+# copy: code-server reads and writes Nextcloud's files directly, with their versions, trash bin and
+# locks. The guide is docs/hosting.md, "All files of the account".
+#
+#   COMPOSE_FILE=compose.yaml:compose.account.yaml     in .env: every docker compose command then
+#   docker compose up -d                               uses both files
+#
+#   Nextcloud <-- WebDAV, app password --> dav (rclone mount, FUSE) --> CODE_DAV_DIR/files
+#                                                                          | the same folder
+#                                                                          v
+#                                                     code-server: /nextcloud/files
+#
+#  dav  rclone mounts the account in CODE_DAV_DIR/files. It is the only container with a Linux
+#       capability (SYS_ADMIN), /dev/fuse and no AppArmor profile, which FUSE needs; code-server
+#       stays without them and sees the mount through the bind propagation of CODE_DAV_DIR.
+#
+# Keep in mind:
+#  - Both containers bind the folder above the mount point (rshared, rslave), and rclone mounts one
+#    level below it: a bind of the mount point itself would keep a dead mount in code-server after
+#    dav restarts. Docker needs CODE_DAV_DIR on a shared mount (findmnt -o PROPAGATION -T <dir>).
+#    CODE_DAV_DIR and CODE_DAV_CACHE_DIR belong to root: root in dav has no CAP_DAC_OVERRIDE.
+#  - Only CODE_UID (code-server) and root reach the account, also on the host at CODE_DAV_DIR/files:
+#    --default-permissions has the kernel check the modes, which --umask 077 sets.
+#  - The folder the working copy mirrors (NEXTCLOUD_FOLDER) is left out of the mount, so that there
+#    are not two ways to the same files. --exclude only hides it: whatever writes there through the
+#    mount still reaches Nextcloud. Set the app's account_exclude to the same folder.
+#  - rclone saves a file 5 s after it was closed, and sees changes made elsewhere only after
+#    --dir-cache-time (1 min): the app's account_sync_hint_seconds should be longer (65).
+#  - What Nextcloud refuses (a locked file, a share without edit rights, a name it does not
+#    allow), code-server still shows as saved; rclone retries it, logs "failed to upload", and keeps
+#    it in CODE_DAV_CACHE_DIR, also across restarts.
+#  - A wrong app password or address stops dav before it mounts, with one attempt a minute:
+#    rclone itself would mount and fail only at the first listing.
+#  - "$$" is Compose's escape for "$".
+
+services:
+  dav:
+    image: rclone/rclone:1.75.2
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        # A mount left over from an unclean end (a crash, a kill, an unmount refused as busy), which a
+        # restarted dav gets through its bind; unmounted lazily, which reaches the host and
+        # code-server too. Before mkdir, which fails on a dead mount. Never the bind above it.
+        if grep -q ' /mnt/dav/files fuse.rclone ' /proc/mounts; then fusermount3 -uz /mnt/dav/files || true; fi
+        mkdir -p /mnt/dav/files
+        RCLONE_CONFIG_NC_PASS="$$(printf '%s' "$$NEXTCLOUD_APP_PASSWORD" | rclone obscure -)"
+        export RCLONE_CONFIG_NC_PASS
+        unset NEXTCLOUD_APP_PASSWORD
+        if ! rclone lsf --max-depth 1 --dirs-only nc: > /dev/null; then
+          echo "Nextcloud refused the login or cannot be reached: check NEXTCLOUD_URL, NEXTCLOUD_USER and the app password" >&2
+          sleep 60
+          exit 1
+        fi
+        # The synced folder as a pattern of rclone's filters: from the account's root, with [ ] { } * ? \
+        # taken literally.
+        folder="/$${NEXTCLOUD_FOLDER#/}"
+        folder="$$(printf '%s' "$${folder%/}" | sed 's/[][{}*?\\]/\\&/g')"
+        exec rclone mount nc: /mnt/dav/files --allow-other --default-permissions --uid "$$CODE_UID" --gid "$$CODE_GID" --umask 077 \
+          --vfs-cache-mode writes --cache-dir /cache --vfs-cache-max-size 2G --vfs-cache-max-age 1h --vfs-write-back 5s \
+          --dir-cache-time 1m --poll-interval 0 --buffer-size 1M --max-buffer-memory 512M \
+          --exclude "$$folder/**" --log-level INFO
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+      CODE_UID: ${CODE_UID:-1000}
+      CODE_GID: ${CODE_GID:-1000}
+      NEXTCLOUD_FOLDER: ${NEXTCLOUD_FOLDER:?set NEXTCLOUD_FOLDER in .env}
+      # The mount's own app password, which can be revoked without stopping the sync, or the sync's.
+      NEXTCLOUD_APP_PASSWORD: ${NEXTCLOUD_DAV_APP_PASSWORD:-${NEXTCLOUD_APP_PASSWORD:?set NEXTCLOUD_APP_PASSWORD in .env}}
+      RCLONE_CONFIG_NC_TYPE: webdav
+      RCLONE_CONFIG_NC_URL: ${NEXTCLOUD_URL:?set NEXTCLOUD_URL in .env}/remote.php/dav/files/${NEXTCLOUD_USER:?set NEXTCLOUD_USER in .env}
+      RCLONE_CONFIG_NC_VENDOR: nextcloud
+      RCLONE_CONFIG_NC_USER: ${NEXTCLOUD_USER}
+    volumes:
+      - type: bind
+        source: ${CODE_DAV_DIR:?set CODE_DAV_DIR in .env}
+        target: /mnt/dav
+        bind:
+          propagation: rshared
+      # rclone's write cache: what it has yet to upload, kept across restarts.
+      - ${CODE_DAV_CACHE_DIR:?set CODE_DAV_CACHE_DIR in .env}:/cache
+    devices:
+      - /dev/fuse
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - "apparmor=unconfined"
+      - "no-new-privileges:true"
+    mem_limit: 1g
+    pids_limit: 256
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ' /mnt/dav/files fuse.rclone ' /proc/mounts"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  code-server:
+    depends_on:
+      dav:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${CODE_DAV_DIR:?set CODE_DAV_DIR in .env}
+        target: /nextcloud
+        bind:
+          propagation: rslave

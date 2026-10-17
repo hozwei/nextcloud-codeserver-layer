@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The nextcloud-codeserver-layer contributors
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Personal settings: the user's folder whose files open in code-server (templates/personal.php).
-// "Choose …" uses Nextcloud's folder picker through OC.dialogs.filepicker (deprecated since
-// Nextcloud 27.1, still in 34 and 35); without it the path can be typed.
+// Personal settings: the user's folder whose files open in code-server, and account access
+// (templates/personal.php). "Choose …" uses Nextcloud's folder picker through
+// OC.dialogs.filepicker (deprecated since Nextcloud 27.1, still in 34 and 35); without it the path
+// can be typed.
 
 import { generateUrl } from '@nextcloud/router';
 import { t } from './l10n.ts';
@@ -14,6 +15,7 @@ type FilePicker = (title: string, callback: (path: string) => void, multiselect:
 const root = document.querySelector<HTMLElement>('#codeserver-layer-personal');
 const form = root?.querySelector<HTMLFormElement>('form');
 const input = root?.querySelector<HTMLInputElement>('#codeserver-layer-folder');
+const account = root?.querySelector<HTMLInputElement>('#codeserver-layer-account');
 const error = root?.querySelector<HTMLElement>('#codeserver-layer-folder-error');
 const status = root?.querySelector<HTMLElement>('.codeserver-settings__status');
 const pick = root?.querySelector<HTMLButtonElement>('.codeserver-settings__pick');
@@ -43,14 +45,16 @@ async function save(event: SubmitEvent): Promise<void> {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json', requesttoken: document.head.dataset.requesttoken ?? '' },
-      body: JSON.stringify({ folder: input.value }),
+      // A disabled checkbox (no place for the whole account yet) is left as it is.
+      body: JSON.stringify({ folder: input.value, ...(account && !account.disabled ? { account: account.checked } : {}) }),
     });
-    const body = (await res.json().catch(() => ({}))) as { folder?: string; error?: string };
+    const body = (await res.json().catch(() => ({}))) as { folder?: string; account?: boolean; error?: string };
     error.textContent = body.error ?? '';
     if (body.error) input.setAttribute('aria-invalid', 'true');
     else input.removeAttribute('aria-invalid');
     if (res.ok) {
       input.value = body.folder ?? '';
+      if (account && typeof body.account === 'boolean') account.checked = body.account;
       status.textContent = t('codeserver_layer', 'Saved');
     } else {
       status.textContent = body.error

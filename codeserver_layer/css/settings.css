@@ -17,6 +17,13 @@
 	padding-block-start: 8px;
 }
 
+/* A part of the form, across both columns. */
+.codeserver-settings__heading {
+	grid-column: 1 / -1;
+	margin: 12px 0 0;
+	font-weight: bold;
+}
+
 .codeserver-settings input[type=url],
 .codeserver-settings input[type=text],
 .codeserver-settings textarea {

@@ -7,6 +7,7 @@ declare(strict_types=1);
 
 namespace OCA\CodeserverLayer;
 
+use OCA\CodeserverLayer\Service\AccountAccess;
 use OCA\CodeserverLayer\Service\Config;
 use OCA\CodeserverLayer\Service\FileTypes;
 use OCA\CodeserverLayer\Service\UserFolder;
@@ -73,6 +74,32 @@ class ConfigLexicon implements ILexicon {
 				definition: 'Seconds after a change in Nextcloud during which opening a file warns that the working copy may not have it yet; 0 turns the warning off',
 			),
 			new Entry(
+				key: Config::KEY_ACCOUNT_WORKSPACE,
+				type: ValueType::STRING,
+				defaultRaw: '',
+				definition: 'Absolute path in code-server\'s container where code-server has the whole account of a user with account access, e.g. /nextcloud/files; empty: no account access',
+				note: 'This place holds one account\'s files: only the user whose account it is should turn on account access (occ codeserver_layer:account).',
+			),
+			new Entry(
+				key: Config::KEY_ACCOUNT_DEFAULT_APP,
+				type: ValueType::BOOL,
+				defaultRaw: false,
+				definition: 'Whether code-server is the default app for account access: a click anywhere outside the code-server folder opens all the listed files in it, also those Nextcloud Text or another app opens otherwise',
+			),
+			new Entry(
+				key: Config::KEY_ACCOUNT_SYNC_HINT,
+				type: ValueType::INT,
+				defaultRaw: Config::DEFAULT_ACCOUNT_SYNC_HINT,
+				definition: 'Seconds after a change in Nextcloud during which opening a file through account access warns that code-server may not have it yet (at least the mount\'s directory cache time); 0 turns the warning off',
+			),
+			new Entry(
+				key: Config::KEY_ACCOUNT_EXCLUDE,
+				type: ValueType::STRING,
+				defaultRaw: '',
+				definition: 'Folders of the account that code-server does not have at account_workspace (its mount leaves them out), one path per line, e.g. /Projects; account access offers nothing in them',
+				note: 'A mount that leaves a folder out may still write into it; without this, a file there would open as missing and saving it would replace the one in Nextcloud.',
+			),
+			new Entry(
 				key: FileTypes::KEY,
 				type: ValueType::STRING,
 				defaultRaw: '',
@@ -91,6 +118,12 @@ class ConfigLexicon implements ILexicon {
 				type: ValueType::STRING,
 				defaultRaw: '',
 				definition: 'File id of the user\'s folder whose files open in code-server (set in the personal settings or with occ codeserver_layer:folder)',
+			),
+			new Entry(
+				key: AccountAccess::KEY,
+				type: ValueType::BOOL,
+				defaultRaw: false,
+				definition: 'Account access: whether files anywhere in the user\'s account open in code-server, from account_workspace (set in the personal settings or with occ codeserver_layer:account)',
 			),
 		];
 	}

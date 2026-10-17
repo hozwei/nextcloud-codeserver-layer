@@ -8,6 +8,7 @@ declare(strict_types=1);
 namespace OCA\CodeserverLayer\Settings;
 
 use OCA\CodeserverLayer\AppInfo\Application;
+use OCA\CodeserverLayer\Service\AccountAccess;
 use OCA\CodeserverLayer\Service\Config;
 use OCA\CodeserverLayer\Service\UserFolder;
 use OCP\AppFramework\Http\TemplateResponse;
@@ -16,13 +17,14 @@ use OCP\Settings\ISettings;
 use OCP\Util;
 
 /**
- * The user's folder whose files open in code-server (templates/personal.php, src/personal.ts).
- * Nextcloud shows personal settings only to users the app is enabled for.
+ * The user's folder whose files open in code-server, and account access (templates/personal.php,
+ * src/personal.ts). Nextcloud shows personal settings only to users the app is enabled for.
  */
 class Personal implements ISettings {
 	public function __construct(
 		private Config $config,
 		private UserFolder $userFolder,
+		private AccountAccess $accountAccess,
 		private IUserSession $userSession,
 	) {
 	}
@@ -36,8 +38,12 @@ class Personal implements ISettings {
 			'folder' => $path ?? '',
 			// A folder was set, but it is gone (deleted, in the trash, no longer shared).
 			'missing' => $path === null && $uid !== '' && $this->userFolder->id($uid) !== '',
-			'usable' => $this->config->usable(),
+			'urlUsable' => $this->config->urlUsable(),
+			'workspaceUsable' => $this->config->workspaceUsable(),
 			'workspace' => $this->config->workspace(),
+			'account' => $uid !== '' && $this->accountAccess->enabled($uid),
+			'accountUsable' => $this->config->accountUsable(),
+			'accountWorkspace' => $this->config->accountWorkspace(),
 		], '');
 	}
 

@@ -3,8 +3,9 @@
 //
 // Administration settings: sends the form (templates/admin.php) to AdminSettingsController and
 // shows the result. The server checks every field and saves nothing if one is not acceptable; after
-// a save it says what a click in Files opens now. Saving needs a recent password confirmation;
-// Nextcloud's own dialog asks for it when needed.
+// a save it says what a click in Files opens now, in the code-server folder and with account
+// access. Saving needs a recent password confirmation; Nextcloud's own dialog asks for it when
+// needed.
 
 import { generateUrl } from '@nextcloud/router';
 import { t } from './l10n.ts';
@@ -16,17 +17,25 @@ interface PasswordConfirmation {
 interface Answer {
   errors?: Record<string, string>;
   hint?: string;
+  accountHint?: string;
   extensions?: string;
   filenames?: string;
   url?: string;
   workspace?: string;
+  accountWorkspace?: string;
+  accountExclude?: string;
+  syncHintSeconds?: string;
+  accountSyncHintSeconds?: string;
   message?: string;
 }
 
 const root = document.querySelector<HTMLElement>('#codeserver-layer-admin');
 const form = root?.querySelector<HTMLFormElement>('form');
 const status = root?.querySelector<HTMLElement>('.codeserver-settings__status');
-const FIELDS = ['url', 'workspace', 'extensions', 'filenames', 'defaultApp', 'newEntries', 'syncHintSeconds'] as const;
+const FIELDS = [
+  'url', 'workspace', 'extensions', 'filenames', 'defaultApp', 'newEntries', 'syncHintSeconds',
+  'accountWorkspace', 'accountExclude', 'accountDefaultApp', 'accountSyncHintSeconds',
+] as const;
 
 // Nextcloud's password dialog (OC.PasswordConfirmation, in Nextcloud 34 and 35). Without it the
 // server answers 403 when a confirmation is due, and the status line says so.
@@ -70,7 +79,11 @@ async function save(event: SubmitEvent): Promise<void> {
         filenames: field<HTMLTextAreaElement>('filenames')?.value ?? '',
         defaultApp: field<HTMLInputElement>('defaultApp')?.checked ?? false,
         newEntries: [...form.querySelectorAll<HTMLInputElement>('input[name="newEntries"]:checked')].map((input) => input.value),
-        syncHintSeconds: Number(field<HTMLInputElement>('syncHintSeconds')?.value ?? '0'),
+        syncHintSeconds: field<HTMLInputElement>('syncHintSeconds')?.value.trim() ?? '',
+        accountWorkspace: field<HTMLInputElement>('accountWorkspace')?.value ?? '',
+        accountDefaultApp: field<HTMLInputElement>('accountDefaultApp')?.checked ?? false,
+        accountSyncHintSeconds: field<HTMLInputElement>('accountSyncHintSeconds')?.value.trim() ?? '',
+        accountExclude: field<HTMLTextAreaElement>('accountExclude')?.value ?? '',
       }),
     });
     const body = (await res.json().catch(() => ({}))) as Answer;
@@ -78,8 +91,10 @@ async function save(event: SubmitEvent): Promise<void> {
     if (res.ok) {
       const hint = root?.querySelector<HTMLElement>('#codeserver-layer-hint');
       if (hint && body.hint) hint.textContent = body.hint;
-      // What the server stored: a trailing slash added, the lists cleaned up.
-      for (const name of ['url', 'workspace', 'extensions', 'filenames'] as const) {
+      const accountHint = root?.querySelector<HTMLElement>('#codeserver-layer-account-hint');
+      if (accountHint && body.accountHint) accountHint.textContent = body.accountHint;
+      // What the server stored: a trailing slash added or taken off, the lists cleaned up.
+      for (const name of ['url', 'workspace', 'accountWorkspace', 'accountExclude', 'extensions', 'filenames', 'syncHintSeconds', 'accountSyncHintSeconds'] as const) {
         const input = field<HTMLInputElement | HTMLTextAreaElement>(name);
         const value = body[name];
         if (input && typeof value === 'string') input.value = value;

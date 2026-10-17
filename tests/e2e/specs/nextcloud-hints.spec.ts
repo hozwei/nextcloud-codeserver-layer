@@ -4,14 +4,15 @@
 // The warnings before a file opens in code-server, which works on a synced copy:
 //   sync        a file changed moments ago warns that code-server may not have the change yet; not
 //               after the administrator's window
-//   locks       a file locked by an account (files_lock) and one open in Nextcloud Text, which
-//               locks it, warn
+//   locks       a file locked by another account (files_lock) and one open in Nextcloud Text,
+//               which locks it, warn; a lock of the user's own only binds a sync that signs in as
+//               another account
 //   intro       the first open in a browser explains why not to edit in Text and code-server at once
 //   slow check  when the check does not answer in time, the file opens anyway and Files says so
 
-import { test, expect, request as requests } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import {
-  clickMenuItem, configSettled, Dav, dialog, introSeen, login, menu, NC, occ, openFolder, opensTab, row, setApp, USER, WORKSPACE,
+  clickMenuItem, configSettled, Dav, dialog, introSeen, login, menu, occ, openFolder, opensTab, OTHER, row, setApp, USER, WORKSPACE,
 } from '../lib/nextcloud.ts';
 
 test.beforeEach(async () => {
@@ -29,16 +30,6 @@ test.afterAll(() => {
 const clickName = (page: import('@playwright/test').Page, name: string) => async () => {
   await row(page, name).locator('[data-cy-files-list-row-name-link]').click();
 };
-
-async function lock(fileId: string, on: boolean): Promise<void> {
-  const context = await requests.newContext();
-  const res = await context.fetch(`${NC}/ocs/v2.php/apps/files_lock/lock/${fileId}`, {
-    method: on ? 'PUT' : 'DELETE',
-    headers: { 'OCS-APIRequest': 'true', Authorization: 'Basic ' + Buffer.from(`${USER.user}:${USER.password}`).toString('base64') },
-  });
-  expect(res.ok(), `${on ? 'lock' : 'unlock'} ${fileId}: ${res.status()}`).toBe(true);
-  await context.dispose();
-}
 
 test('sync: a file changed moments ago warns first; not after the window', async ({ page, context }) => {
   await introSeen(context);
@@ -72,7 +63,7 @@ test('sync: a file changed moments ago warns first; not after the window', async
   });
 });
 
-test('locks: a lock of an account, and Nextcloud Text\'s, warn first', async ({ page, context, browser }) => {
+test('locks: a lock of another account, and Nextcloud Text\'s, warn first', async ({ page, context, browser }) => {
   await introSeen(context);
   setApp('sync_hint_seconds', 0);
   const dav = await Dav.of(USER);
@@ -82,14 +73,28 @@ test('locks: a lock of an account, and Nextcloud Text\'s, warn first', async ({ 
   await login(page, USER);
   await openFolder(page, 'Projects/My App');
 
-  await test.step('locked by the account itself (files_lock)', async () => {
-    await lock(id, true);
+  await test.step('locked by another account (files_lock), which the file is shared with', async () => {
+    const share = await dav.share('Projects/My App/locked.ps1', OTHER.user, 3);
+    const other = await Dav.of(OTHER);
+    await other.lock(id, true);
     try {
       await clickName(page, 'locked.ps1')();
-      await expect(dialog(page)).toContainText('The file is locked by e2e-user.');
+      await expect(dialog(page)).toContainText('The file is locked by e2e-other. While it is locked, Nextcloud refuses what you save in code-server.');
       await dialog(page).getByRole('button', { name: 'Cancel' }).click();
     } finally {
-      await lock(id, false);
+      await other.lock(id, false);
+      await dav.unshare(share);
+    }
+  });
+
+  await test.step('locked by the user: binds the sync only if it signs in as another account', async () => {
+    await dav.lock(id, true);
+    try {
+      await clickName(page, 'locked.ps1')();
+      await expect(dialog(page)).toContainText('You locked this file yourself');
+      await dialog(page).getByRole('button', { name: 'Cancel' }).click();
+    } finally {
+      await dav.lock(id, false);
     }
   });
 

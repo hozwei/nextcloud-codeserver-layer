@@ -14,9 +14,11 @@ use OCP\IL10N;
 
 /**
  * The administrator's settings and the rules for them: the code-server address, the working copy
- * in its container, the file types that open in code-server, whether a click opens all of them
- * there (the default app), the "+ New" entries and the hint about the sync. The only place with
- * the default lists, the catalogue of "+ New" entries and the types other apps open.
+ * in its container, where code-server has the whole account for account access, the file types
+ * that open in code-server, whether a click opens all of them there (the default app, for the
+ * code-server folder and for account access each), the "+ New" entries and the warnings about a
+ * recent change. The only place with the default lists, the catalogue of "+ New" entries and the
+ * types other apps open.
  */
 class Config {
 	public const KEY_URL = 'url';
@@ -26,6 +28,10 @@ class Config {
 	public const KEY_DEFAULT_APP = 'default_app';
 	public const KEY_NEW_ENTRIES = 'new_entries';
 	public const KEY_SYNC_HINT = 'sync_hint_seconds';
+	public const KEY_ACCOUNT_WORKSPACE = 'account_workspace';
+	public const KEY_ACCOUNT_DEFAULT_APP = 'account_default_app';
+	public const KEY_ACCOUNT_SYNC_HINT = 'account_sync_hint_seconds';
+	public const KEY_ACCOUNT_EXCLUDE = 'account_exclude';
 
 	/**
 	 * The text and programming formats code-server opens, by extension (docs/nextcloud-app.md).
@@ -75,6 +81,9 @@ class Config {
 	];
 	public const DEFAULT_NEW_ENTRIES = ['ps1', 'psm1', 'yaml', 'json', 'sh', 'py'];
 	public const DEFAULT_SYNC_HINT = 60;
+	// A mount such as rclone's keeps a folder's listing for its directory cache time (rclone's
+	// --dir-cache-time, often 1 min) and the kernel a file's attributes for a second more.
+	public const DEFAULT_ACCOUNT_SYNC_HINT = 65;
 	public const MAX_SYNC_HINT = 3600;
 
 	public function __construct(
@@ -119,11 +128,46 @@ class Config {
 		return max(0, min(self::MAX_SYNC_HINT, $value));
 	}
 
-	/** Whether the address and the working copy are set and usable: without them the app offers nothing. */
-	public function usable(): bool {
+	/** Where code-server has the whole account of a user with account access ('/nextcloud'), or ''. */
+	public function accountWorkspace(): string {
+		return $this->appConfig->getValueString(Application::APP_ID, self::KEY_ACCOUNT_WORKSPACE, '');
+	}
+
+	public function accountDefaultApp(): bool {
+		return $this->appConfig->getValueBool(Application::APP_ID, self::KEY_ACCOUNT_DEFAULT_APP, false);
+	}
+
+	public function accountSyncHintSeconds(): int {
+		$value = $this->appConfig->getValueInt(Application::APP_ID, self::KEY_ACCOUNT_SYNC_HINT, self::DEFAULT_ACCOUNT_SYNC_HINT);
+		return max(0, min(self::MAX_SYNC_HINT, $value));
+	}
+
+	/**
+	 * The folders of the account that code-server does not have where it has the account: its
+	 * mount leaves them out (such as a folder with a working copy of its own). Usable ones only.
+	 *
+	 * @return list<string> paths in the users' files, such as /Projects
+	 */
+	public function accountExclude(): array {
+		return self::parseFolders($this->appConfig->getValueString(Application::APP_ID, self::KEY_ACCOUNT_EXCLUDE, ''))[0];
+	}
+
+	/** Whether the address is set and usable: without it the app offers nothing. */
+	public function urlUsable(): bool {
 		$url = $this->url();
+		return $url !== '' && $this->urlProblem($url) === null;
+	}
+
+	/** Whether the working copy is set and usable: without it no code-server folder opens. */
+	public function workspaceUsable(): bool {
 		$workspace = $this->workspace();
-		return $url !== '' && $this->urlProblem($url) === null && $workspace !== '' && $this->workspaceProblem($workspace) === null;
+		return $workspace !== '' && $this->workspaceProblem($workspace) === null;
+	}
+
+	/** Whether the place of the whole account is set and usable: without it there is no account access. */
+	public function accountUsable(): bool {
+		$workspace = $this->accountWorkspace();
+		return $workspace !== '' && $this->accountWorkspaceProblem($workspace) === null;
 	}
 
 	/** The address as the browser takes it: with a trailing slash. */
@@ -179,14 +223,21 @@ class Config {
 
 	/** Why $path cannot be the working copy in code-server's container, or null. */
 	public function workspaceProblem(string $path): ?string {
-		if ($path === '' || $path[0] !== '/' || $path === '/' || strlen($path) > 1000
-			|| preg_match('/[\x00-\x1f\x7f\\\\]/', $path) === 1
-			|| str_ends_with($path, '/')
-			|| in_array('', array_slice(explode('/', $path), 1), true)
-			|| array_intersect(['.', '..'], explode('/', $path)) !== []) {
-			return $this->l->t('Use an absolute path in code-server\'s container, such as /workspace, without . or .. and without a slash at the end.');
-		}
-		return null;
+		return self::validPath($path) ? null : $this->l->t('Use an absolute path in code-server\'s container, such as /workspace, without . or .. and without a slash at the end.');
+	}
+
+	/** Why $path cannot be where code-server has the whole account, or null. */
+	public function accountWorkspaceProblem(string $path): ?string {
+		return self::validPath($path) ? null : $this->l->t('Use an absolute path in code-server\'s container, such as /nextcloud/files, without . or .. and without a slash at the end.');
+	}
+
+	/** Absolute, not / itself, without a slash at the end, empty, . or .. segments, control characters or backslashes. */
+	private static function validPath(string $path): bool {
+		return $path !== '' && $path[0] === '/' && $path !== '/' && strlen($path) <= 1000
+			&& preg_match('/[\x00-\x1f\x7f\\\\]/', $path) !== 1
+			&& !str_ends_with($path, '/')
+			&& !in_array('', array_slice(explode('/', $path), 1), true)
+			&& array_intersect(['.', '..'], explode('/', $path)) === [];
 	}
 
 	/** @return list<string> the items of a list separated by commas, spaces or lines */
@@ -220,6 +271,32 @@ class Config {
 			}
 		}
 		return [array_values(array_unique($list)), $bad === [] ? null : implode(' ', $bad)];
+	}
+
+	/**
+	 * The folders in $value, one per line, as paths in the users' files ('Projects/' becomes
+	 * '/Projects'), and the lines that are none (the root, . or .. segments, control characters,
+	 * backslashes), or null.
+	 *
+	 * @return array{0: list<string>, 1: ?string}
+	 */
+	public static function parseFolders(string $value): array {
+		$list = [];
+		$bad = [];
+		foreach (preg_split('/\R/', $value) ?: [] as $line) {
+			$line = trim($line);
+			if ($line === '') {
+				continue;
+			}
+			$path = '/' . trim($line, '/');
+			if ($path === '/' || strlen($path) > 4000 || preg_match('/[\x00-\x1f\x7f\\\\]/', $path) === 1
+				|| array_intersect(['.', '..'], explode('/', $path)) !== [] || in_array('', array_slice(explode('/', $path), 1), true)) {
+				$bad[] = $line;
+			} else {
+				$list[] = $path;
+			}
+		}
+		return [array_values(array_unique($list)), $bad === [] ? null : implode(', ', $bad)];
 	}
 
 	/** @return array{0: list<string>, 1: ?string} the file names in $value, and the invalid ones or null */
@@ -268,10 +345,13 @@ class Config {
 		return str_starts_with($mime, 'x-office/');
 	}
 
-	/** What a click opens in code-server with the current settings, for the line under the lists. */
-	public function hint(): string {
-		$split = $this->clickAndMenu($this->extensions(), $this->defaultApp());
-		if ($this->defaultApp()) {
+	/**
+	 * What a click opens in code-server with the current lists, as the default app or not: the
+	 * lines under the checkboxes for the code-server folder and for account access.
+	 */
+	public function hint(bool $defaultApp): string {
+		$split = $this->clickAndMenu($this->extensions(), $defaultApp);
+		if ($defaultApp) {
 			return $this->l->t('A click opens all these files in code-server. Where Nextcloud Text opens them otherwise, it stays in the file\'s menu as "View".');
 		}
 		if ($split['menu'] === []) {

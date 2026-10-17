@@ -11,12 +11,12 @@
   <id>codeserver_layer</id>
   <name>code-server Layer</name>
   <summary>Open your code and text files from Nextcloud in code-server, in a new tab</summary>
-  <description>code-server Layer opens the files of a folder of yours in code-server, the editor that runs on a server and in the browser. It is meant for a code-server that works on a copy of that folder, kept in sync with Nextcloud.
+  <description>code-server Layer opens your files from Nextcloud in code-server, the editor that runs on a server and in the browser: those of a folder of yours that code-server has a copy of, kept in sync with Nextcloud, and with account access those anywhere in your files, for a code-server that has your whole account, such as through a mount over WebDAV.
 
-**Status:** early. Files offers "Open in code-server" for common text and programming formats (PowerShell, shell, Python, web, JSON, YAML, TOML, XML, INI, logs, Markdown, C and C#, Java, Go, Rust, SQL, Terraform, Dockerfile and more), and opens them on a click where no other app does, or for all of them as the default app. "+ New" entries create a file in code-server. Code formats Nextcloud does not know get its code icon. Opening warns when the file changed in Nextcloud moments ago or is open in Nextcloud Text. English and German.
+**Status:** early. Files offers "Open in code-server" for common text and programming formats (PowerShell, shell, Python, web, JSON, YAML, TOML, XML, INI, logs, Markdown, C and C#, Java, Go, Rust, SQL, Terraform, Dockerfile and more), and opens them on a click where no other app does, or for all of them as the default app. Folders open in code-server from their menu, with the terminal in them. "+ New" entries create a file in code-server. Code formats Nextcloud does not know get its code icon. Opening warns when the file changed in Nextcloud moments ago, is locked or open in Nextcloud Text, or may only be read. English and German.
 
-Needs a code-server reachable by the browser and a sync between Nextcloud and its working copy. Not affiliated with Coder or Microsoft. Source code and documentation: https://github.com/hozwei/nextcloud-codeserver-layer</description>
-  <version>0.1.0</version>
+Needs a code-server reachable by the browser that has your files: a sync between Nextcloud and its working copy, or a mount of your account. Not affiliated with Coder or Microsoft. Source code and documentation: https://github.com/hozwei/nextcloud-codeserver-layer</description>
+  <version>0.2.0</version>
   <licence>AGPL-3.0-or-later</licence>
   <author>The nextcloud-codeserver-layer contributors</author>
   <namespace>CodeserverLayer</namespace>
@@ -46,6 +46,7 @@ Needs a code-server reachable by the browser and a sync between Nextcloud and it
   </repair-steps>
   <commands>
     <command>OCA\CodeserverLayer\Command\Folder</command>
+    <command>OCA\CodeserverLayer\Command\Account</command>
   </commands>
   <settings>
     <admin>OCA\CodeserverLayer\Settings\Admin</admin>

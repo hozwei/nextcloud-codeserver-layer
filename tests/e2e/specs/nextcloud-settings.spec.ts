@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // The settings:
-//   administration   saves and refuses (address, working copy, lists, "+ New", sync warning), says
-//                    what a click opens with and without the default app
+//   administration   saves and refuses (address, working copy, lists, "+ New", sync warning, the
+//                    place of the whole account and its warning), says what a click opens with and
+//                    without the default app, for the code-server folder and for account access
 //   outside group    an administrator the app is not enabled for sees why the page cannot save,
 //                    instead of a bare "HTTP 412"
 //   personal         the folder, kept as its file id: renaming it keeps the entries; a file is no
-//                    folder; accounts outside the group have no such page; occ sets, shows, clears
+//                    folder; account access, only once the administrator set its place; the page says
+//                    when the working copy is missing; accounts outside the group have no such page;
+//                    occ sets, shows, clears both
 //   German           the texts in German, informal and formal
 
 import { test, expect, type Page } from '@playwright/test';
@@ -17,7 +20,8 @@ const ADMIN_PAGE = `${NC}/index.php/settings/admin/codeserver_layer`;
 const PERSONAL_PAGE = `${NC}/index.php/settings/user/codeserver_layer`;
 const admin = (page: Page) => page.locator('#codeserver-layer-admin');
 
-async function saveAdmin(page: Page, fields: Partial<Record<'url' | 'workspace' | 'extensions' | 'filenames' | 'syncHintSeconds', string>>): Promise<string> {
+type AdminField = 'url' | 'workspace' | 'extensions' | 'filenames' | 'syncHintSeconds' | 'accountWorkspace' | 'accountSyncHintSeconds' | 'accountExclude';
+async function saveAdmin(page: Page, fields: Partial<Record<AdminField, string>>): Promise<string> {
   for (const [name, value] of Object.entries(fields)) await admin(page).locator(`[name="${name}"]`).fill(value);
   const saved = page.waitForResponse((r) => r.url().endsWith('/apps/codeserver_layer/settings/admin'));
   await admin(page).getByRole('button', { name: 'Save' }).click();
@@ -29,7 +33,10 @@ test.afterEach(() => {
   // What the other specs need.
   setApp('url', CAPTURE);
   setApp('workspace', '/workspace');
-  for (const key of ['extensions', 'filenames', 'default_app', 'new_entries', 'sync_hint_seconds']) occ('config:app:delete', 'codeserver_layer', key);
+  for (const key of ['extensions', 'filenames', 'default_app', 'new_entries', 'sync_hint_seconds', 'account_workspace', 'account_default_app', 'account_sync_hint_seconds', 'account_exclude']) {
+    occ('config:app:delete', 'codeserver_layer', key);
+  }
+  occ('codeserver_layer:account', USER.user, 'off');
   occ('user:setting', USER.user, 'core', 'lang', 'en');
   occ('user:setting', ADMIN.user, 'core', 'lang', 'en');
 });
@@ -67,6 +74,34 @@ test('administration: saves, refuses what it cannot use, says what a click opens
     expect(await saveAdmin(page, {})).toBe('Saved');
     await expect(admin(page).locator('#codeserver-layer-hint')).toContainText('A click opens all these files in code-server.');
     expect(occ('config:app:get', 'codeserver_layer', 'default_app').trim()).toBe('1');
+  });
+
+  await test.step('account access: its place refused when relative, saved without the slash; its own hint and window', async () => {
+    for (const [fields, error, message] of [
+      [{ accountWorkspace: 'nextcloud' }, 'accountWorkspace', 'such as /nextcloud/files'],
+      [{ accountWorkspace: '/data/./x' }, 'accountWorkspace', 'such as /nextcloud/files'],
+      [{ accountWorkspace: '/nextcloud', accountSyncHintSeconds: '-1' }, 'accountSyncHintSeconds', 'from 0 to 3600'],
+      [{ accountSyncHintSeconds: '' }, 'accountSyncHintSeconds', 'from 0 to 3600'],
+      [{ accountSyncHintSeconds: '65', accountExclude: '/Projects\n/' }, 'accountExclude', 'Not a folder: /.'],
+      [{ accountExclude: '\\Projects' }, 'accountExclude', 'Not a folder: \\Projects.'],
+    ] as const) {
+      expect(await saveAdmin(page, fields)).toBe('Nothing was saved. Correct the marked fields.');
+      await expect(admin(page).locator(`#codeserver-layer-${error}-error`)).toContainText(message);
+    }
+    expect(occ('config:app:get', 'codeserver_layer', 'account_workspace', '--default-value=').trim(), 'nothing stored').toBe('');
+    expect(await saveAdmin(page, { accountWorkspace: '/data/All Files/', accountSyncHintSeconds: '90', accountExclude: 'Projects/\n\n/Team Folder' })).toBe('Saved');
+    await expect(admin(page).locator('[name="accountWorkspace"]')).toHaveValue('/data/All Files');
+    await expect(admin(page).locator('[name="accountExclude"]')).toHaveValue('/Projects\n/Team Folder');
+    expect(occ('config:app:get', 'codeserver_layer', 'account_exclude').trim()).toBe('/Projects\n/Team Folder');
+    expect(occ('config:app:get', 'codeserver_layer', 'account_workspace').trim()).toBe('/data/All Files');
+    expect(occ('config:app:get', 'codeserver_layer', 'account_sync_hint_seconds').trim()).toBe('90');
+    await expect(admin(page).locator('#codeserver-layer-account-hint')).toContainText('A click opens these in code-server: ps1, and the file names in the list.');
+    await admin(page).locator('#codeserver-layer-account-default-app').check();
+    expect(await saveAdmin(page, {})).toBe('Saved');
+    await expect(admin(page).locator('#codeserver-layer-account-hint')).toContainText('A click opens all these files in code-server.');
+    expect(occ('config:app:get', 'codeserver_layer', 'account_default_app').trim()).toBe('1');
+    expect(await saveAdmin(page, { accountWorkspace: '' })).toBe('Saved');
+    expect(occ('config:app:get', 'codeserver_layer', 'account_workspace', '--default-value=').trim(), 'empty: no account access').toBe('');
   });
 
   await test.step('"Restore the default list" fills in the lists the app comes with', async () => {
@@ -137,6 +172,44 @@ test('personal: the folder follows a rename; a file is no folder; only for the g
     expect(occ('codeserver_layer:folder', USER.user, '/Projects')).toContain('/Projects (file id');
   });
 
+  const account = personal.locator('[name="account"]');
+
+  await test.step('account access: off until the administrator sets where code-server has the account', async () => {
+    await page.goto(PERSONAL_PAGE);
+    await expect(account).toBeDisabled();
+    await expect(personal).toContainText('An administrator has yet to set where code-server has your whole account.');
+  });
+
+  await test.step('account access: the checkbox saves it, next to the folder', async () => {
+    setApp('account_workspace', '/nextcloud');
+    await configSettled(page);
+    await page.goto(PERSONAL_PAGE);
+    await expect(personal).toContainText('code-server has the files of one account at /nextcloud. Turn this on only if that account is yours');
+    await account.check();
+    await save();
+    await expect(personal.locator('.codeserver-settings__status')).toHaveText('Saved');
+    await expect(folder).toHaveValue('/Projects');
+    expect(occ('codeserver_layer:account', USER.user)).toContain(`Account access of ${USER.user}: on`);
+    await page.goto(PERSONAL_PAGE);
+    await expect(account).toBeChecked();
+  });
+
+  await test.step('account access: occ shows and sets it', async () => {
+    expect(occ('codeserver_layer:account', USER.user, 'off')).toContain(`Account access of ${USER.user}: off`);
+    await page.goto(PERSONAL_PAGE);
+    await expect(account).not.toBeChecked();
+    expect(occ('codeserver_layer:account', USER.user, 'on')).toContain('code-server has the account at /nextcloud');
+    expect(() => occ('codeserver_layer:account', USER.user, 'maybe'), 'neither on nor off').toThrow();
+  });
+
+  await test.step('without a working copy, the page says the folder has no effect', async () => {
+    occ('config:app:delete', 'codeserver_layer', 'workspace');
+    await configSettled(page);
+    await page.goto(PERSONAL_PAGE);
+    await expect(personal).toContainText('An administrator has yet to set where code-server has its working copy. Until then, the folder below has no effect.');
+    setApp('workspace', '/workspace');
+  });
+
   await test.step('an account outside the group has no such page', async () => {
     const other = await page.context().browser()!.newContext();
     try {
@@ -163,11 +236,15 @@ test('German: informal and formal', async ({ page, context }) => {
   await row(page, 'notes.md').waitFor();
   expect(await menu(page, 'notes.md')).toContain('In code-server öffnen');
   await page.keyboard.press('Escape');
+  setApp('account_workspace', '/nextcloud');
+  await configSettled(page);
   await page.goto(PERSONAL_PAGE);
   await expect(page.locator('#codeserver-layer-personal')).toContainText('Sein Pfad in deinen Dateien.');
+  await expect(page.locator('#codeserver-layer-personal')).toContainText('code-server hat unter /nextcloud die Dateien eines Kontos. Schalte das nur ein, wenn es deins ist');
 
   occ('user:setting', USER.user, 'core', 'lang', 'de_DE');
   await configSettled(page);
   await page.goto(PERSONAL_PAGE);
   await expect(page.locator('#codeserver-layer-personal')).toContainText('Sein Pfad in Ihren Dateien.');
+  await expect(page.locator('#codeserver-layer-personal')).toContainText('code-server hat unter /nextcloud die Dateien eines Kontos. Schalten Sie das nur ein, wenn es Ihres ist');
 });

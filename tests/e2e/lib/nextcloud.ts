@@ -5,9 +5,11 @@
 // account, the login, Files' menus and the tabs the app opens.
 //
 // Environment (docs/development.md): NEXTCLOUD_URL; NEXTCLOUD_CONTAINER, the Docker container occ
-// runs in; NEXTCLOUD_PASSWORD for the administrator admin; E2E_PASSWORD_SUFFIX for the accounts
-// e2e-user (in the group code, owns the code-server folder), e2e-admin2 (an administrator outside
-// the group) and e2e-other (outside the group); CAPTURE_PORT, the stand-in for code-server.
+// runs in, or NEXTCLOUD_OCC, a shell command that runs occ for a Nextcloud without Docker (such as
+// "cd /srv/nextcloud && php occ"); NEXTCLOUD_PASSWORD for the administrator admin;
+// E2E_PASSWORD_SUFFIX for the accounts e2e-user (in the group code, owns the code-server folder),
+// e2e-admin2 (an administrator outside the group) and e2e-other (outside the group); CAPTURE_PORT,
+// the stand-in for code-server.
 
 import { execFileSync } from 'node:child_process';
 import { expect, request as requests, type APIRequestContext, type BrowserContext, type Page } from '@playwright/test';
@@ -16,6 +18,8 @@ import { decodeLaunchUrl } from '../../../codeserver_layer/src/launch.ts';
 export const NC = (process.env.NEXTCLOUD_URL ?? '').replace(/\/+$/, '');
 export const CAPTURE = `http://127.0.0.1:${process.env.CAPTURE_PORT || 8791}/`;
 export const WORKSPACE = '/workspace';
+/** Where the stand-in code-server has the whole account, for account access. */
+export const ACCOUNT = '/nextcloud';
 export const GROUP = 'code';
 
 export interface Account { user: string; password: string }
@@ -25,8 +29,10 @@ export const USER: Account = { user: 'e2e-user', password: `e2e-e2e-user${suffix
 export const ADMIN2: Account = { user: 'e2e-admin2', password: `e2e-e2e-admin2${suffix}` };
 export const OTHER: Account = { user: 'e2e-other', password: `e2e-e2e-other${suffix}` };
 
-/** Runs occ in the test Nextcloud's container and returns its output. */
+/** Runs occ in the test Nextcloud (its container, or NEXTCLOUD_OCC) and returns its output. */
 export function occ(...args: string[]): string {
+  const local = process.env.NEXTCLOUD_OCC;
+  if (local) return execFileSync('sh', ['-c', `${local} "$@"`, 'occ', ...args], { encoding: 'utf8' });
   const container = process.env.NEXTCLOUD_CONTAINER ?? 'nextcloud';
   return execFileSync('docker', ['exec', '-u', 'www-data', container, 'php', 'occ', ...args], { encoding: 'utf8' });
 }
@@ -121,6 +127,33 @@ export class Dav {
   async fileId(path: string): Promise<string> {
     return /<oc:fileid>(\d+)</.exec(await this.prop(path, '<oc:fileid/>'))?.[1] ?? '';
   }
+
+  /** Shares path with another account (permissions: 1 read, 3 read and change, ...); returns the share's id. */
+  async share(path: string, withUser: string, permissions: number): Promise<string> {
+    const res = await this.request.fetch(`${NC}/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json`, {
+      method: 'POST',
+      headers: { ...auth(this.account), 'OCS-APIRequest': 'true' },
+      form: { path: `/${path}`, shareType: '0', shareWith: withUser, permissions: String(permissions) },
+    });
+    expect(res.ok(), `share ${path}: ${res.status()}`).toBe(true);
+    return String(((await res.json()) as { ocs: { data: { id: string | number } } }).ocs.data.id);
+  }
+
+  async unshare(id: string): Promise<void> {
+    await this.request.fetch(`${NC}/ocs/v2.php/apps/files_sharing/api/v1/shares/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { ...auth(this.account), 'OCS-APIRequest': 'true' },
+    });
+  }
+
+  /** Locks the file with this id as this account (files_lock), as Files' "Lock file" does, or unlocks it. */
+  async lock(fileId: string, on: boolean): Promise<void> {
+    const res = await this.request.fetch(`${NC}/ocs/v2.php/apps/files_lock/lock/${encodeURIComponent(fileId)}`, {
+      method: on ? 'PUT' : 'DELETE',
+      headers: { ...auth(this.account), 'OCS-APIRequest': 'true' },
+    });
+    expect(res.ok(), `${on ? 'lock' : 'unlock'} ${fileId} as ${this.account.user}: ${res.status()}`).toBe(true);
+  }
 }
 
 export async function login(page: Page, account: Account): Promise<void> {
@@ -146,11 +179,12 @@ export async function untraced<T>(page: Page, action: () => Promise<T>): Promise
   }
 }
 
-/** A browser context that has seen the app's one-time explanation already. */
+/** A browser context that has seen the app's one-time explanations already, for both places. */
 export async function introSeen(context: BrowserContext): Promise<void> {
   await context.addInitScript(() => {
     try {
       window.localStorage.setItem('codeserver_layer:intro-seen', '1');
+      window.localStorage.setItem('codeserver_layer:intro-seen-account', '1');
     } catch {
       // no storage
     }
@@ -189,7 +223,7 @@ export async function newMenu(page: Page): Promise<string[]> {
 }
 
 /** The tab the app opens on action(), and what code-server would open from its address. */
-export async function opensTab(page: Page, action: () => Promise<void>): Promise<{ folder: string | null; file: string | null; authority: string | null; url: string }> {
+export async function opensTab(page: Page, action: () => Promise<void>): Promise<ReturnType<typeof decodeLaunchUrl> & { url: string }> {
   const popup = page.context().waitForEvent('page', { timeout: 20_000 });
   await action();
   const tab = await popup;

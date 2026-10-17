@@ -289,7 +289,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # The addresses the app builds, in a real code-server of the tested version.
+  # The addresses the app builds, in a real code-server of the tested version; and, in a second one
+  # with workspace trust on, how an empty window takes the trust of its file.
   codeserver-e2e:
     name: codeserver-e2e
     runs-on: ubuntu-24.04
@@ -325,16 +326,18 @@ jobs:
           dir=$(node tests/e2e/tools/fetch-codeserver.mjs | tail -1)
           mkdir -p "$RUNNER_TEMP/workspace"
           sh tests/e2e/tools/start-codeserver.sh "$dir" "$RUNNER_TEMP/code-server" 8090
+          CODESERVER_TRUST=1 sh tests/e2e/tools/start-codeserver.sh "$dir" "$RUNNER_TEMP/code-server-trust" 8091
 
       - name: End-to-end tests in code-server
         timeout-minutes: 8
         env:
           CODESERVER_URL: http://127.0.0.1:8090/
+          CODESERVER_TRUST_URL: http://127.0.0.1:8091/
         run: CODESERVER_WORKSPACE="$RUNNER_TEMP/workspace" CODESERVER_HOST_DIR="$RUNNER_TEMP/workspace" npm run test:e2e -- --project=codeserver-chromium
 
       - name: code-server log
         if: failure()
-        run: cat "$RUNNER_TEMP/code-server/code-server.log" || true
+        run: cat "$RUNNER_TEMP/code-server/code-server.log" "$RUNNER_TEMP/code-server-trust/code-server.log" || true
 
       - name: Upload Playwright report and test results
         if: failure()
@@ -347,15 +350,17 @@ jobs:
           retention-days: 14
 
   # The hosting example (hosting/compose.example.yaml, docs/hosting.md) as users run it: both
-  # images built, the sync against a test Nextcloud in both directions, and the app's addresses in
-  # the built code-server through web. Only the sign-in with Nextcloud's app oidc is replaced
+  # images built, the sync against a test Nextcloud in both directions, the account's mount of
+  # hosting/compose.account.yaml (rclone over WebDAV, FUSE, bind propagation) in both directions,
+  # and the app's addresses in the built code-server through web, also those of account access into
+  # the mount. Only the sign-in with Nextcloud's app oidc is replaced
   # (tests/e2e/hosting/compose.ci.yaml): it needs a browser login at a real provider.
   hosting:
     name: hosting example
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      COMPOSE_FILE: hosting/compose.example.yaml:tests/e2e/hosting/compose.ci.yaml
+      COMPOSE_FILE: hosting/compose.example.yaml:hosting/compose.account.yaml:tests/e2e/hosting/compose.ci.yaml
       NEXTCLOUD: http://localhost:8081
       ALICE_PASSWORD: e2e-alice-password-5c1d
     steps:
@@ -392,7 +397,10 @@ jobs:
           NEXTCLOUD_USER=alice
           NEXTCLOUD_FOLDER=/Projects
           NEXTCLOUD_APP_PASSWORD=not-yet
+          NEXTCLOUD_DAV_APP_PASSWORD=not-yet
           SYNC_INTERVAL=5
+          CODE_DAV_DIR=$RUNNER_TEMP/dav
+          CODE_DAV_CACHE_DIR=$RUNNER_TEMP/dav-cache
           OIDC_ISSUER_URL=https://unused.example.com
           OIDC_CLIENT_ID=unused
           OIDC_CLIENT_SECRET=unused
@@ -410,6 +418,19 @@ jobs:
         timeout-minutes: 10
         run: docker compose build
 
+      # What a host needs for the mount (docs/hosting.md): /dev/fuse, both folders root's (root in
+      # dav has no CAP_DAC_OVERRIDE), and the folder above the mount point on a shared mount, which
+      # Docker requires for the bind propagation.
+      - name: Prepare the folder for the account's mount
+        run: |
+          test -c /dev/fuse || sudo modprobe fuse
+          ls -l /dev/fuse
+          sudo mkdir -p "$RUNNER_TEMP/dav" "$RUNNER_TEMP/dav-cache"
+          sudo chmod 700 "$RUNNER_TEMP/dav-cache"
+          sudo mount --bind "$RUNNER_TEMP/dav" "$RUNNER_TEMP/dav"
+          sudo mount --make-rshared "$RUNNER_TEMP/dav"
+          findmnt -o TARGET,PROPAGATION -T "$RUNNER_TEMP/dav"
+
       # bash: with pipefail, a failing occ fails here and not two steps later.
       - name: Start the test Nextcloud with a folder for the sync
         timeout-minutes: 10
@@ -426,16 +447,23 @@ jobs:
           curl -fsS -u "alice:$ALICE_PASSWORD" -X MKCOL "$dav/Projects"
           curl -fsS -u "alice:$ALICE_PASSWORD" -X MKCOL "$dav/Projects/Synced"
           printf 'Write-Output "from Nextcloud"\n' | curl -fsS -u "alice:$ALICE_PASSWORD" -T - "$dav/Projects/Synced/down.ps1"
+          curl -fsS -u "alice:$ALICE_PASSWORD" -X MKCOL "$dav/Account"
+          printf 'Write-Output "from the account"\n' | curl -fsS -u "alice:$ALICE_PASSWORD" -T - "$dav/Account/acc.ps1"
           token=$(docker compose exec -T -u www-data -e NC_PASS="$ALICE_PASSWORD" nextcloud php occ user:auth-tokens:add --password-from-env alice | tail -1 | tr -d '\r')
           [[ $token =~ ^[A-Za-z0-9]{72}$ ]] || { echo "::error::occ user:auth-tokens:add returned no app password"; exit 1; }
           echo "::add-mask::$token"
           sed -i "s|^NEXTCLOUD_APP_PASSWORD=.*|NEXTCLOUD_APP_PASSWORD=$token|" hosting/.env
+          # The mount's own, as the guide advises.
+          token=$(docker compose exec -T -u www-data -e NC_PASS="$ALICE_PASSWORD" nextcloud php occ user:auth-tokens:add --password-from-env alice | tail -1 | tr -d '\r')
+          [[ $token =~ ^[A-Za-z0-9]{72}$ ]] || { echo "::error::occ user:auth-tokens:add returned no app password"; exit 1; }
+          echo "::add-mask::$token"
+          sed -i "s|^NEXTCLOUD_DAV_APP_PASSWORD=.*|NEXTCLOUD_DAV_APP_PASSWORD=$token|" hosting/.env
 
       # The sync on its own, so that a failing sync fails its own steps below.
       - name: Start the stack
         timeout-minutes: 5
         run: |
-          docker compose up -d --wait code-server gate web
+          docker compose up -d --wait dav code-server gate web
           docker compose up -d sync
 
       - name: The sync brings a file from Nextcloud
@@ -451,11 +479,48 @@ jobs:
           printf 'saved in code-server\n' > "$RUNNER_TEMP/workspace/Synced/up.txt"
           until curl -fsS -u "alice:$ALICE_PASSWORD" "$NEXTCLOUD/remote.php/dav/files/alice/Projects/Synced/up.txt" 2>/dev/null | grep -q 'saved in code-server'; do sleep 2; done
 
+      # In code-server at /nextcloud/files; the folder the working copy mirrors is left out.
+      - name: The mount has the account, without the synced folder
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          docker compose exec -T code-server ls -la /nextcloud/files
+          docker compose exec -T code-server cat /nextcloud/files/Account/acc.ps1 | grep -q 'from the account'
+          if docker compose exec -T code-server ls /nextcloud/files | grep -qx Projects; then
+            echo "::error::The mount shows /Projects, which compose.account.yaml leaves out"; exit 1
+          fi
+
+      - name: A file saved through the mount reaches Nextcloud
+        timeout-minutes: 2
+        run: |
+          printf 'saved through the mount\n' > "$RUNNER_TEMP/dav/files/Account/up.txt"
+          until curl -fsS -u "alice:$ALICE_PASSWORD" "$NEXTCLOUD/remote.php/dav/files/alice/Account/up.txt" 2>/dev/null | grep -q 'saved through the mount'; do sleep 2; done
+
+      # rclone killed leaves a dead mount on the host and in code-server; the restarted dav clears
+      # it, and code-server gets the new mount without a restart of its own.
+      - name: After an unclean end of dav, code-server gets the new mount
+        timeout-minutes: 3
+        run: |
+          docker compose kill -s KILL dav
+          docker compose up -d --wait dav
+          docker compose exec -T code-server cat /nextcloud/files/Account/acc.ps1 | grep -q 'from the account'
+          grep -q 'from the account' "$RUNNER_TEMP/dav/files/Account/acc.ps1"
+
       - name: The app's addresses in the built code-server, through web
         timeout-minutes: 8
         env:
           CODESERVER_URL: http://localhost:8080/
-        run: CODESERVER_WORKSPACE=/workspace CODESERVER_HOST_DIR="$RUNNER_TEMP/workspace" npm run test:e2e -- --project=codeserver-chromium
+          CODESERVER_ACCOUNT: /nextcloud/files
+        run: CODESERVER_WORKSPACE=/workspace CODESERVER_HOST_DIR="$RUNNER_TEMP/workspace" CODESERVER_ACCOUNT_HOST_DIR="$RUNNER_TEMP/dav/files" npm run test:e2e -- --project=codeserver-chromium
+
+      # The account tests saved a new file in code-server, in an empty window, into the mount.
+      - name: The file saved in code-server reached Nextcloud
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          dav="$NEXTCLOUD/remote.php/dav/files/alice"
+          until folder=$(curl -fsS -u "alice:$ALICE_PASSWORD" -X PROPFIND -H 'Depth: 1' "$dav/All%20Files/" | grep -o 'All%20Files/new-[a-z0-9]*/' | head -1) && [ -n "$folder" ] \
+            && curl -fsS -u "alice:$ALICE_PASSWORD" "$dav/$folder""neu.ps1" 2>/dev/null | grep -q 'Write-Output "neu"'; do sleep 2; done
 
       - name: Logs of the stack
         if: failure()

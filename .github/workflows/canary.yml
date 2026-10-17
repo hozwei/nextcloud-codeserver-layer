@@ -4,8 +4,9 @@
 # Daily run against the newest releases of what the app depends on but does not control, so that
 # an update elsewhere that breaks the app shows up before a server takes it:
 #  - codeserver-latest: the newest code-server release, which comes out about weekly. The address
-#    format the app builds (?folder=…&payload=…) belongs to VS Code's web workbench and can change
-#    with any release; specs/codeserver.spec.ts opens the app's addresses in it.
+#    formats the app builds (?folder=…&payload=…, ?ew=true&payload=… for an empty window, ?folder=…)
+#    belong to VS Code's web workbench and can change with any release, as can how an empty window
+#    takes the trust of its file; specs/codeserver.spec.ts opens the app's addresses in it.
 #  - nextcloud-latest: the newest patch release of each Nextcloud major in info.xml's range (the
 #    official nextcloud:<major>-apache images), with the newest release of the Craft Suite Layer
 #    next to the app, as both write Nextcloud's MIME type files: all specs/nextcloud-*.spec.ts, as
@@ -88,6 +89,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/workspace"
           sh tests/e2e/tools/start-codeserver.sh "$DIR" "$RUNNER_TEMP/code-server" 8090
+          # Workspace trust on, for how an empty window takes the trust of its file.
+          CODESERVER_TRUST=1 sh tests/e2e/tools/start-codeserver.sh "$DIR" "$RUNNER_TEMP/code-server-trust" 8091
 
       # With CI set, the config retries a failed test once; --fail-on-flaky-tests keeps a test that
       # passes only on its retry from counting as passed. The JSON report feeds the summary.
@@ -96,6 +99,7 @@ jobs:
         timeout-minutes: 8
         env:
           CODESERVER_URL: http://127.0.0.1:8090/
+          CODESERVER_TRUST_URL: http://127.0.0.1:8091/
           PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ runner.temp }}/codeserver.json
         run: |
           CODESERVER_WORKSPACE="$RUNNER_TEMP/workspace" CODESERVER_HOST_DIR="$RUNNER_TEMP/workspace" \
@@ -113,7 +117,7 @@ jobs:
 
       - name: code-server log
         if: failure()
-        run: cat "$RUNNER_TEMP/code-server/code-server.log" || true
+        run: cat "$RUNNER_TEMP/code-server/code-server.log" "$RUNNER_TEMP/code-server-trust/code-server.log" || true
 
       - name: Upload Playwright report and test results
         if: failure()

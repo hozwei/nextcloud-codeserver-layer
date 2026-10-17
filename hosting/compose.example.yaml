@@ -148,7 +148,9 @@ services:
         d=$$HOME/.local/share/code-server
         mkdir -p "$$d/Machine"
         # Settings for everyone on this code-server, written at every start; a user's own settings
-        # cannot override them (docs/hosting.md, "code-server's settings").
+        # cannot override them (docs/hosting.md, "code-server's settings"). /nextcloud is the
+        # account's mount of compose.account.yaml: not watched (as a path, so that the watcher does
+        # not walk it over the network) and not copied into the local history.
         cat > "$$d/Machine/settings.json" <<'EOF'
         {
           "files.autoSave": "off",
@@ -156,7 +158,8 @@ services:
           "[bat]": { "files.eol": "\r\n" },
           "git.enabled": false,
           "files.exclude": { "**/.sync_*.db*": true },
-          "files.watcherExclude": { "**/.git/**": true, "**/node_modules/**": true, "**/.venv/**": true, "**/.sync_*.db*": true },
+          "files.watcherExclude": { "**/.git/**": true, "**/node_modules/**": true, "**/.venv/**": true, "**/.sync_*.db*": true, "/nextcloud": true, "/nextcloud/**": true },
+          "workbench.localHistory.exclude": { "/nextcloud/**": true },
           "search.exclude": { "**/node_modules": true, "**/.venv": true }
         }
         EOF

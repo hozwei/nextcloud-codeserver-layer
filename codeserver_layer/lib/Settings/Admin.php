@@ -33,6 +33,7 @@ class Admin implements ISettings {
 	public function getForm(): TemplateResponse {
 		$url = $this->config->url();
 		$workspace = $this->config->workspace();
+		$accountWorkspace = $this->config->accountWorkspace();
 		$selected = $this->config->newEntries();
 		$entries = [];
 		foreach (array_keys(Config::NEW_ENTRIES) as $id) {
@@ -56,7 +57,13 @@ class Admin implements ISettings {
 			'defaultApp' => $this->config->defaultApp(),
 			'newEntries' => $entries,
 			'syncHintSeconds' => $this->config->syncHintSeconds(),
-			'hint' => $this->config->hint(),
+			'hint' => $this->config->hint($this->config->defaultApp()),
+			'accountWorkspace' => $accountWorkspace,
+			'accountWorkspaceProblem' => $accountWorkspace === '' ? null : $this->config->accountWorkspaceProblem($accountWorkspace),
+			'accountDefaultApp' => $this->config->accountDefaultApp(),
+			'accountSyncHintSeconds' => $this->config->accountSyncHintSeconds(),
+			'accountExclude' => implode("\n", $this->config->accountExclude()),
+			'accountHint' => $this->config->hint($this->config->accountDefaultApp()),
 			'enabledForUser' => $this->appManager->isEnabledForUser(Application::APP_ID),
 			'groups' => $groups,
 		], '');
