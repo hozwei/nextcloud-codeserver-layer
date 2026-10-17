@@ -154,7 +154,7 @@ project folder `/workspace/My App`, and with account access a file `/Photos/rena
 Early: 0.2.0 adds account access to the first release, 0.1.0. The author runs it with the hosting
 example's setup.
 
-- **Tested on every change:** the app end to end in Nextcloud 34.0.4 and 35.0.1, its links in
+- **Tested on every change:** the app end to end in Nextcloud 34.0.5 and 35.0.2, its links in
   code-server 4.141.0 (also how a window without a folder takes the workspace trust of its file),
   and the Docker Compose example with a test Nextcloud, including the mount of the account. Not
   tested: the sign-in with Nextcloud's `oidc` app and your reverse proxy

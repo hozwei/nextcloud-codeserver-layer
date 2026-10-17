@@ -161,6 +161,6 @@ replacing it. "+ New" relies on this.
 | Nextcloud app | `<version>` in `codeserver_layer/appinfo/info.xml` | 0.2.0, Nextcloud 34 and 35 |
 | Release | the tag `v<version>` | v0.2.0 |
 | Tested code-server | `tests/e2e/versions.json` | 4.141.0 |
-| Tested Nextcloud releases | `tests/e2e/versions.json` (`nextcloud.tested`) | 34.0.4, 35.0.1 |
-| Tested Craft Suite Layer, next to the app | `tests/e2e/versions.json` | 0.4.2 |
+| Tested Nextcloud releases | `tests/e2e/versions.json` (`nextcloud.tested`) | 34.0.5, 35.0.2 |
+| Tested Craft Suite Layer, next to the app | `tests/e2e/versions.json` | 0.5.1 |
 | rclone in the hosting example's mount | `hosting/compose.account.yaml` | 1.75.2 |

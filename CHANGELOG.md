@@ -13,6 +13,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- CI tests Nextcloud 34.0.5 and 35.0.2 and the Craft Suite Layer 0.5.1 (`tests/e2e/versions.json`),
+  as the canary found them passing.
+- The end-to-end tests wait 7 s instead of 3.5 s for a setting changed with `occ`: a request that
+  loads lazy app config values can store Nextcloud's cached values again, the old ones with them,
+  for another 3 s (seen with Nextcloud 35.0.2).
+
 ## [0.2.0] - 2026-10-17
 
 ### Added

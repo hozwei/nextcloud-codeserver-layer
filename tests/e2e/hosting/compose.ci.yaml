@@ -36,7 +36,7 @@ services:
       - /tmp:size=16m,mode=1777
 
   nextcloud:
-    image: nextcloud:${CI_NEXTCLOUD_VERSION:-35.0.1}-apache
+    image: nextcloud:${CI_NEXTCLOUD_VERSION:-35.0.2}-apache
     environment:
       SQLITE_DATABASE: nextcloud
       NEXTCLOUD_ADMIN_USER: admin

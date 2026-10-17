@@ -58,7 +58,7 @@ docker run -d --name nextcloud -p 8080:80 \
   -e NEXTCLOUD_ADMIN_USER=admin -e NEXTCLOUD_ADMIN_PASSWORD=test-password \
   -e NEXTCLOUD_TRUSTED_DOMAINS=localhost \
   -v "$PWD/codeserver_layer/build/stage/codeserver_layer:/var/www/html/custom_apps/codeserver_layer" \
-  nextcloud:35.0.1-apache
+  nextcloud:35.0.2-apache
 sh tests/e2e/tools/setup-nextcloud.sh nextcloud http://localhost:8080 [craftsuite_layer-<version>.tar.gz]
 NEXTCLOUD_URL=http://localhost:8080 NEXTCLOUD_CONTAINER=nextcloud NEXTCLOUD_PASSWORD=test-password \
   npm run test:e2e -- --project=nextcloud-chromium

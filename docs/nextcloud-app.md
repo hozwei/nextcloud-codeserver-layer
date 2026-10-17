@@ -13,8 +13,8 @@ and German (`de` informal, `de_DE` formal).
 
 | Nextcloud | PHP | End-to-end tests in CI with |
 |---|---|---|
-| 34 | 8.2 to 8.5 | `nextcloud:34.0.4-apache` |
-| 35 | 8.3 to 8.5 (Nextcloud 35 needs 8.3 or newer) | `nextcloud:35.0.1-apache` |
+| 34 | 8.2 to 8.5 | `nextcloud:34.0.5-apache` |
+| 35 | 8.3 to 8.5 (Nextcloud 35 needs 8.3 or newer) | `nextcloud:35.0.2-apache` |
 
 The end-to-end tests run on the images' PHP 8.5; PHP 8.2 to 8.4 are checked with `php -l`.
 
