@@ -208,7 +208,8 @@ test('left out: folders the mount leaves out have no entries through account acc
   expect(await menu(page, 'a #1 %.ps1')).not.toContain('Open in code-server');
   await page.keyboard.press('Escape');
   await opensNoTab(page, click(page, 'a #1 %.ps1'));
-  for (const entry of ['New PowerShell script', 'New YAML file']) expect(await newMenu(page), entry).not.toContain(entry);
+  const entries = await newMenu(page);
+  for (const entry of ['New PowerShell script', 'New YAML file']) expect(entries, entry).not.toContain(entry);
   await page.keyboard.press('Escape');
   await expect(page.locator('.files-list__header').getByRole('button', { name: 'Open in code-server' })).toHaveCount(0);
   await openFolder(page, 'Other');

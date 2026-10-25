@@ -20,6 +20,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The end-to-end tests wait 7 s instead of 3.5 s for a setting changed with `occ`: a request that
   loads lazy app config values can store Nextcloud's cached values again, the old ones with them,
   for another 3 s (seen with Nextcloud 35.0.2).
+- The end-to-end tests read a menu once it shows, after the one before it has closed: counting its
+  entries in the page read a menu as empty while it was opening (seen by the canary with Nextcloud
+  34.0.5), and a check that an entry is missing passed on the empty menu.
 
 ## [0.2.0] - 2026-10-17
 

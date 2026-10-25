@@ -12,7 +12,7 @@
 // the stand-in for code-server.
 
 import { execFileSync } from 'node:child_process';
-import { expect, request as requests, type APIRequestContext, type BrowserContext, type Page } from '@playwright/test';
+import { expect, request as requests, type APIRequestContext, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { decodeLaunchUrl } from '../../../codeserver_layer/src/launch.ts';
 
 export const NC = (process.env.NEXTCLOUD_URL ?? '').replace(/\/+$/, '');
@@ -198,13 +198,24 @@ export const openFolder = (page: Page, dir: string) => page.goto(`${NC}/index.ph
 
 export const row = (page: Page, name: string) => page.locator(`[data-cy-files-list-row-name="${name}"]`);
 
-/** The entries of a file's action menu. Read in the page, as the Craft Suite Layer's tests do. */
-export async function menu(page: Page, name: string): Promise<string[]> {
-  await row(page, name).locator('[data-cy-files-list-row-actions] button.action-item__menutoggle').click();
-  await expect.poll(() => page.evaluate(() => document.querySelectorAll('[role="menuitem"]').length)).toBeGreaterThan(0);
-  return page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
-    .filter((e) => e.offsetParent !== null).map((e) => e.innerText.trim()).filter(Boolean));
+/** The texts of the menu entries shown now. A menu still opening or already closing has its entries in the page without showing them. */
+const shownEntries = (page: Page) => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
+  .filter((e) => e.offsetParent !== null).map((e) => e.innerText.trim()).filter(Boolean));
+
+/**
+ * Opens a menu and reads its entries in the page, as the Craft Suite Layer's tests do. Waits for no
+ * menu to show before the click and for this one to show after it: counting the entries in the page
+ * read a menu as empty while it was opening, next to the one Escape had just closed.
+ */
+async function openMenu(page: Page, toggle: Locator): Promise<string[]> {
+  await expect.poll(() => shownEntries(page), 'no other menu is open').toEqual([]);
+  await toggle.click();
+  await expect.poll(async () => (await shownEntries(page)).length, 'the menu shows').toBeGreaterThan(0);
+  return shownEntries(page);
 }
+
+/** The entries of a file's action menu. */
+export const menu = (page: Page, name: string) => openMenu(page, row(page, name).locator('[data-cy-files-list-row-actions] button.action-item__menutoggle'));
 
 /** A real click (with user activation) on a visible menu entry. */
 export async function clickMenuItem(page: Page, text: string): Promise<void> {
@@ -218,12 +229,7 @@ export async function clickMenuItem(page: Page, text: string): Promise<void> {
 }
 
 /** The entries of Files' "+ New" menu. */
-export async function newMenu(page: Page): Promise<string[]> {
-  await page.locator('[data-cy-upload-picker] button.action-item__menutoggle').first().click();
-  await expect.poll(() => page.evaluate(() => document.querySelectorAll('[role="menuitem"]').length)).toBeGreaterThan(0);
-  return page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
-    .filter((e) => e.offsetParent !== null).map((e) => e.innerText.trim()).filter(Boolean));
-}
+export const newMenu = (page: Page) => openMenu(page, page.locator('[data-cy-upload-picker] button.action-item__menutoggle').first());
 
 /** The tab the app opens on action(), and what code-server would open from its address. */
 export async function opensTab(page: Page, action: () => Promise<void>): Promise<ReturnType<typeof decodeLaunchUrl> & { url: string }> {
